@@ -231,6 +231,14 @@ def import_schedule(excel_path: str = DEFAULT_EXCEL, db_path: str = DB_PATH) -> 
     # Write to DB
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS schedule (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            course INTEGER, direction TEXT, day TEXT,
+            time TEXT, subject TEXT, teacher TEXT, room TEXT
+        )
+    """)
+    conn.commit()
     cursor.execute("SELECT COUNT(*) FROM schedule")
     old_count = cursor.fetchone()[0]
     print(f"Old records in DB: {old_count}")

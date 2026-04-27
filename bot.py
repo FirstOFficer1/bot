@@ -44,6 +44,14 @@ def load_directions_from_db():
     """
     conn = sqlite3.connect("s.db")
     cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS schedule (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            course INTEGER, direction TEXT, day TEXT,
+            time TEXT, subject TEXT, teacher TEXT, room TEXT
+        )
+    """)
+    conn.commit()
     cursor.execute("SELECT DISTINCT course, direction FROM schedule ORDER BY course;")
     directions_from_db = cursor.fetchall()
     conn.close()
