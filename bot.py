@@ -1,8 +1,10 @@
 import os
+import sys
 from dotenv import load_dotenv
 import datetime
 import sqlite3
 from aiogram import Bot, Dispatcher, Router
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.filters import Command
 import asyncio
@@ -10,6 +12,48 @@ import re
 import logging
 
 load_dotenv()
+
+# ── Московское время ──────────────────────────────────────────────────
+_MSK = datetime.timezone(datetime.timedelta(hours=3))
+def now_msk():
+    return datetime.datetime.now(_MSK).replace(tzinfo=None)
+
+# ── SOCKS5 прокси с авто-ротацией ────────────────────────────────────
+PROXY_LIST = [
+    "socks5://185.218.137.242:1080",   # NL
+    "socks5://167.172.161.22:1088",    # DE
+    "socks5://65.109.218.115:1080",    # FI
+    "socks5://91.217.81.131:1080",     # RU
+]
+_proxy_errors = 0
+_PROXY_ERROR_LIMIT = 8
+
+def _make_session(proxy_url=None):
+    if proxy_url:
+        return AiohttpSession(proxy=proxy_url, timeout=60)
+    return AiohttpSession(timeout=60)
+
+async def _build_bot():
+    """Выбирает первый рабочий прокси из PROXY_LIST, иначе — без прокси."""
+    for proxy_url in PROXY_LIST:
+        try:
+            test_bot = Bot(token=TOKEN, session=_make_session(proxy_url))
+            me = await test_bot.get_me()
+            logging.info(f"Proxy OK: {proxy_url} (@{me.username})")
+            return test_bot
+        except Exception as e:
+            logging.warning(f"Proxy {proxy_url} failed: {e}")
+    logging.warning("All proxies failed, connecting directly")
+    return Bot(token=TOKEN, session=_make_session())
+
+async def proxy_watchdog():
+    """Перезапускает процесс если прокси умер (N ошибок подряд)."""
+    global _proxy_errors
+    while True:
+        await asyncio.sleep(15)
+        if _proxy_errors >= _PROXY_ERROR_LIMIT:
+            logging.warning(f"Proxy died ({_proxy_errors} errors), restarting...")
+            sys.exit(1)
 
 # === НАСТРОЙКИ ===
 TOKEN = os.getenv("TOKEN", "")
@@ -20,7 +64,7 @@ MODEL_URI = os.getenv("MODEL_URI", "")
 # to the model identifier / URI provided by Yandex Cloud (for example a model from
 # the 'open' family). If left empty, the code uses the default YandexGPT modelUri.
 
-bot = Bot(token=TOKEN)
+bot = Bot(token=TOKEN, session=_make_session())
 dp = Dispatcher()
 router = Router()
 dp.include_router(router)
@@ -356,7 +400,7 @@ async def reminder_checker():
     """
     while True:
         await asyncio.sleep(10)  # например, раз в 10 секунд (или 60)
-        now = datetime.datetime.now()
+        now = now_msk()
 
         # получаем все неотправленные напоминания
         reminders = get_not_notified_reminders()
@@ -374,9 +418,14 @@ async def reminder_checker():
             # если время напоминания уже настало/просрочено
             if remind_at_dt <= now:
                 # отправляем сообщение
-                await bot.send_message(uid, f"Напоминание: {text}")
-                # помечаем напоминание как отправленное
-                mark_reminder_notified(rid)
+                try:
+                    await bot.send_message(uid, f"Напоминание: {text}")
+                    mark_reminder_notified(rid)
+                except Exception as _re:
+                    logging.exception(f"Не удалось отправить напоминание id={rid}")
+                    if "proxy" in str(_re).lower() or "connect" in str(_re).lower():
+                        global _proxy_errors
+                        _proxy_errors += 1
 
 
 async def class_notification_checker():
@@ -384,7 +433,7 @@ async def class_notification_checker():
     notify_before = datetime.timedelta(minutes=10)
     while True:
         await asyncio.sleep(30)  # проверяем каждые 30 секунд
-        now = datetime.datetime.now()
+        now = now_msk()
 
         # Получаем все подписки
         subs = get_all_subscriptions()
@@ -1279,11 +1328,15 @@ async def handle_message(message: Message):
 # ----------------------------------------------------------------------------------
 
 async def main():
+    global bot
+    bot = await _build_bot()
+
     # 1. Создаём нужные таблицы
     create_notes_tables()
 
-    # 2. Запускаем фоновую задачу, которая каждые N секунд проверяет напоминания
+    # 2. Запускаем фоновую задачи
     asyncio.create_task(reminder_checker())
+    asyncio.create_task(proxy_watchdog())
     # Фоновая задача для уведомлений о парах
     asyncio.create_task(class_notification_checker())
 
