@@ -319,7 +319,7 @@ def add_note(uid: int, text: str) -> None:
     conn = sqlite3.connect("notes.db")
     conn.execute(
         "INSERT INTO notes (user_id, note_text, timestamp) VALUES (?,?,?)",
-        (uid, text, datetime.datetime.now().isoformat(timespec="seconds")),
+        (uid, text, now_msk().isoformat(timespec="seconds")),
     )
     conn.commit()
     conn.close()
@@ -413,7 +413,7 @@ def add_feedback(uid: int, text: str) -> None:
     conn = sqlite3.connect("notes.db")
     conn.execute(
         "INSERT INTO feedback (user_id, text, timestamp) VALUES (?,?,?)",
-        (uid, text, datetime.datetime.now().isoformat(timespec="seconds")),
+        (uid, text, now_msk().isoformat(timespec="seconds")),
     )
     conn.commit()
     conn.close()
@@ -499,7 +499,7 @@ def _mark_notif(uid: int, row_id: int, date: str, time: str) -> None:
     conn.execute(
         "INSERT INTO sent_class_notifications "
         "(user_id, schedule_row_id, class_date, class_time, sent_at) VALUES (?,?,?,?,?)",
-        (uid, row_id, date, time, datetime.datetime.now().isoformat(timespec="seconds")),
+        (uid, row_id, date, time, now_msk().isoformat(timespec="seconds")),
     )
     conn.commit()
     conn.close()
