@@ -825,7 +825,7 @@ async def handle(message: Message) -> None:
             return
         now = now_msk()
         state.update(step="rem_date", reminder_text=text, cal_year=now.year, cal_month=now.month)
-        await message.answer("📅 Выбери дату:", keyboard=calendar_kb(now.year, now.month))
+        await message.answer("📅 Выбери дату:", keyboard=calendar_kb(now.year, now.month, now.day))
         return
 
     if isinstance(state, dict) and state.get("step") == "rem_date":
@@ -995,7 +995,7 @@ async def handle(message: Message) -> None:
         state.update(step="dl_date", dl_desc=desc, cal_year=now.year, cal_month=now.month)
         await message.answer(
             f"Шаг 3/4 — Выбери дату дедлайна:",
-            keyboard=calendar_kb(now.year, now.month),
+            keyboard=calendar_kb(now.year, now.month, now.day),
         )
         return
 
