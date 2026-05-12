@@ -136,6 +136,8 @@ DAY_KB = _kb(
 CANCEL_KB = _kb(["❌ Отмена"], one_time=True)
 BACK_KB = _kb(["◀ Назад"])
 
+NOTES_LIMIT = 50
+
 _DAYS = {"Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота"}
 
 _MONTH_NAMES = [
@@ -372,6 +374,11 @@ def create_tables() -> None:
                 notified_1day INTEGER DEFAULT 0,
                 notified_1hour INTEGER DEFAULT 0
             );
+            CREATE TABLE IF NOT EXISTS user_prefs (
+                user_id INTEGER PRIMARY KEY,
+                course INTEGER,
+                direction TEXT
+            );
         """)
 
 
@@ -497,6 +504,46 @@ def mark_deadline_1day(did: int) -> None:
 def mark_deadline_1hour(did: int) -> None:
     with _db() as conn:
         conn.execute("UPDATE deadlines SET notified_1hour=1 WHERE id=?", (did,))
+
+
+# Предпочтения пользователя (курс/направление для быстрого расписания)
+def get_user_pref(uid: int) -> tuple | None:
+    with _db() as conn:
+        return conn.execute(
+            "SELECT course, direction FROM user_prefs WHERE user_id=?", (uid,)
+        ).fetchone()
+
+
+def set_user_pref(uid: int, course: int, direction: str) -> None:
+    with _db() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO user_prefs (user_id, course, direction) VALUES (?,?,?)",
+            (uid, course, direction),
+        )
+
+
+# Напоминания пользователя
+def get_user_reminders(uid: int) -> list:
+    with _db() as conn:
+        return conn.execute(
+            "SELECT id, reminder_text, remind_at FROM reminders "
+            "WHERE user_id=? AND notified=0 ORDER BY remind_at",
+            (uid,),
+        ).fetchall()
+
+
+def delete_reminder(rid: int) -> None:
+    with _db() as conn:
+        conn.execute("DELETE FROM reminders WHERE id=?", (rid,))
+
+
+# Дубли подписок
+def sub_exists(uid: int, course: int, direction: str) -> bool:
+    with _db() as conn:
+        return conn.execute(
+            "SELECT 1 FROM subscriptions WHERE user_id=? AND course=? AND LOWER(direction)=LOWER(?)",
+            (uid, course, direction),
+        ).fetchone() is not None
 
 
 def _notif_sent(uid: int, row_id: int, date: str, time: str) -> bool:
@@ -703,11 +750,27 @@ async def handle(message: Message) -> None:
             return
         wt = current_week_type()
         hint = "чётная" if wt == "чёт" else "нечётная"
-        user_states[uid] = {"step": "course", "week_type": wt}
-        await message.answer(
-            f"Сейчас идёт {hint} неделя.\nВыбери курс:",
-            keyboard=course_kb(),
-        )
+        pref = get_user_pref(uid)
+        if pref:
+            pref_course, pref_dir = pref
+            user_states[uid] = {"step": "quick_day", "course": pref_course, "direction": pref_dir, "week_type": wt}
+            await message.answer(
+                f"Сейчас идёт {hint} неделя.\n"
+                f"Последний выбор: {pref_course} курс — {pref_dir}\n\nВыбери день:",
+                keyboard=_kb(
+                    ["Понедельник", "Вторник"],
+                    ["Среда", "Четверг"],
+                    ["Пятница", "Суббота"],
+                    ["🔄 Сменить курс/направление"],
+                    ["◀ Назад", "🏠 Меню"],
+                ),
+            )
+        else:
+            user_states[uid] = {"step": "course", "week_type": wt}
+            await message.answer(
+                f"Сейчас идёт {hint} неделя.\nВыбери курс:",
+                keyboard=course_kb(),
+            )
         return
 
     if isinstance(state, dict) and state.get("step") == "course":
@@ -747,6 +810,7 @@ async def handle(message: Message) -> None:
         if text in _DAYS:
             sched = get_schedule(course, direction, text, week_type)
             wlabel = "чётная" if week_type == "чёт" else "нечётная"
+            set_user_pref(uid, course, direction)
             user_states.pop(uid, None)
             await message.answer(
                 f"📅 {text} ({wlabel} неделя)\n"
@@ -756,6 +820,39 @@ async def handle(message: Message) -> None:
             )
             return
         await message.answer("Выбери день из кнопок:", keyboard=DAY_KB)
+        return
+
+    if isinstance(state, dict) and state.get("step") == "quick_day":
+        course = state["course"]
+        direction = state["direction"]
+        week_type = state["week_type"]
+        _quick_day_kb = _kb(
+            ["Понедельник", "Вторник"],
+            ["Среда", "Четверг"],
+            ["Пятница", "Суббота"],
+            ["🔄 Сменить курс/направление"],
+            ["◀ Назад", "🏠 Меню"],
+        )
+        if text == "◀ Назад":
+            user_states.pop(uid, None)
+            await message.answer("Главное меню:", keyboard=MAIN_KB)
+            return
+        if text == "🔄 Сменить курс/направление":
+            user_states.patch(uid, step="course")
+            await message.answer("Выбери курс:", keyboard=course_kb())
+            return
+        if text in _DAYS:
+            sched = get_schedule(course, direction, text, week_type)
+            wlabel = "чётная" if week_type == "чёт" else "нечётная"
+            user_states.pop(uid, None)
+            await message.answer(
+                f"📅 {text} ({wlabel} неделя)\n"
+                f"{course} курс · {direction}\n\n"
+                f"{sched}",
+                keyboard=MAIN_KB,
+            )
+            return
+        await message.answer("Выбери день из кнопок:", keyboard=_quick_day_kb)
         return
 
     # ── ЗАМЕТКИ ───────────────────────────────────────────────────────────────
@@ -770,9 +867,16 @@ async def handle(message: Message) -> None:
             await message.answer("Отменено.", keyboard=MAIN_KB)
             return
         if text:
-            add_note(uid, text)
-            user_states.pop(uid, None)
-            await message.answer("✅ Заметка сохранена!", keyboard=MAIN_KB)
+            if len(get_notes(uid)) >= NOTES_LIMIT:
+                user_states.pop(uid, None)
+                await message.answer(
+                    f"❌ Достигнут лимит ({NOTES_LIMIT} заметок). Удали старые, чтобы добавить новые.",
+                    keyboard=MAIN_KB,
+                )
+            else:
+                add_note(uid, text)
+                user_states.pop(uid, None)
+                await message.answer("✅ Заметка сохранена!", keyboard=MAIN_KB)
         else:
             await message.answer("Текст не может быть пустым. Попробуй ещё раз:", keyboard=CANCEL_KB)
         return
@@ -834,8 +938,50 @@ async def handle(message: Message) -> None:
 
     # ── НАПОМИНАНИЯ ───────────────────────────────────────────────────────────
     if text == "⏰ Напоминание":
-        user_states[uid] = {"step": "rem_text"}
-        await message.answer("✏️ Введи текст напоминания:", keyboard=CANCEL_KB)
+        rems = get_user_reminders(uid)
+        rem_map = {}
+        if rems:
+            ans = "⏰ Твои активные напоминания:\n\n"
+            for i, (rid, rtext, rat) in enumerate(rems, 1):
+                rem_map[str(i)] = rid
+                try:
+                    rat_fmt = datetime.datetime.strptime(rat, "%Y-%m-%d %H:%M").strftime("%d.%m.%Y %H:%M")
+                except ValueError:
+                    rat_fmt = rat
+                ans += f"[{i}] {rtext}\n   📅 {rat_fmt}\n\n"
+            ans += "Введи номер для отмены или добавь новое."
+        else:
+            ans = "У тебя нет активных напоминаний.\n\nДобавь первое!"
+        user_states[uid] = {"state": "reminders", "rem_map": rem_map}
+        await message.answer(ans, keyboard=_kb(["➕ Добавить напоминание"], ["◀ Назад"]))
+        return
+
+    if isinstance(state, dict) and state.get("state") == "reminders":
+        if text == "◀ Назад":
+            user_states.pop(uid, None)
+            await message.answer("Главное меню:", keyboard=MAIN_KB)
+            return
+        if text == "➕ Добавить напоминание":
+            user_states[uid] = {"step": "rem_text"}
+            await message.answer("✏️ Введи текст напоминания:", keyboard=CANCEL_KB)
+            return
+        if text.isdigit():
+            rem_map = state.get("rem_map", {})
+            num = int(text)
+            if str(num) in rem_map:
+                delete_reminder(rem_map[str(num)])
+                user_states.pop(uid, None)
+                await message.answer(f"✅ Напоминание [{num}] отменено.", keyboard=MAIN_KB)
+            else:
+                await message.answer(
+                    "❌ Напоминание с таким номером не найдено.",
+                    keyboard=_kb(["➕ Добавить напоминание"], ["◀ Назад"]),
+                )
+            return
+        await message.answer(
+            "Введи номер напоминания для отмены или нажми кнопку.",
+            keyboard=_kb(["➕ Добавить напоминание"], ["◀ Назад"]),
+        )
         return
 
     if isinstance(state, dict) and state.get("step") == "rem_text":
@@ -1146,13 +1292,20 @@ async def handle(message: Message) -> None:
             return
         direction = resolve_direction(text, course)
         if direction:
-            add_subscription(uid, course, direction)
-            user_states.pop(uid, None)
-            await message.answer(
-                f"✅ Подписка добавлена!\n{course} курс — {direction}\n\n"
-                "Буду напоминать о каждой паре за 10 минут до начала.",
-                keyboard=MAIN_KB,
-            )
+            if sub_exists(uid, course, direction):
+                user_states.pop(uid, None)
+                await message.answer(
+                    f"ℹ️ Ты уже подписан на {course} курс — {direction}.",
+                    keyboard=MAIN_KB,
+                )
+            else:
+                add_subscription(uid, course, direction)
+                user_states.pop(uid, None)
+                await message.answer(
+                    f"✅ Подписка добавлена!\n{course} курс — {direction}\n\n"
+                    "Буду напоминать о каждой паре за 10 минут до начала.",
+                    keyboard=MAIN_KB,
+                )
             return
         await message.answer("Выбери направление из кнопок:", keyboard=direction_kb(course))
         return
@@ -1205,14 +1358,15 @@ async def handle(message: Message) -> None:
         await message.answer(
             "📖 Краткое руководство:\n\n"
             "📅 Расписание\n"
-            "Нажми «Расписание» — бот сам определит чётность недели.\n"
-            "Выбери курс → направление → день.\n"
+            "Нажми «Расписание» — бот определит чётность недели.\n"
+            "Бот запоминает последний выбор курса и направления — в следующий раз можно сразу выбрать день.\n"
             "На любом шаге «🏠 Меню» возвращает в главное меню.\n\n"
             "📝 Заметки\n"
-            "«Добавить заметку» — введи текст, бот сохранит.\n"
+            "«Добавить заметку» — введи текст, бот сохранит (лимит 50 заметок).\n"
             "«Мои заметки» — список с номерами; введи номер (или несколько через запятую) для удаления.\n\n"
             "⏰ Напоминания\n"
-            "«Напоминание» → введи текст → выбери дату в календаре → введи время (ЧЧ:ММ).\n"
+            "«Напоминание» — показывает список активных напоминаний, можно отменить по номеру.\n"
+            "«Добавить напоминание» → введи текст → выбери дату → введи время (ЧЧ:ММ).\n"
             "В указанное время придёт сообщение.\n\n"
             "🔔 Подписки на пары\n"
             "«Подписки на пары» → добавь курс и направление.\n"
