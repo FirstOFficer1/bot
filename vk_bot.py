@@ -12,11 +12,13 @@ from __future__ import annotations
 import asyncio
 import calendar as _cal
 import datetime
+import json
 import logging
 import random
 import re
 import sqlite3
 import os
+from contextlib import contextmanager
 
 from dotenv import load_dotenv
 from vkbottle import Bot, Keyboard, Text
@@ -46,13 +48,66 @@ def current_week_type() -> str:
     return "нечет" if now_msk().isocalendar()[1] % 2 == 0 else "чёт"
 
 
-# ── Состояния пользователей ───────────────────────────────────────────────────
-user_states: dict = {}
+# ── DB-хелпер ────────────────────────────────────────────────────────────────
+@contextmanager
+def _db(path: str = "notes.db"):
+    conn = sqlite3.connect(path)
+    try:
+        yield conn
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# ── Состояния пользователей (персистентные) ──────────────────────────────────
+class _StateStore:
+    def __init__(self):
+        self._data: dict = {}
+
+    def load_all(self) -> None:
+        with _db() as conn:
+            rows = conn.execute(
+                "SELECT user_id, state_json FROM user_states"
+            ).fetchall()
+        for uid, json_str in rows:
+            try:
+                self._data[uid] = json.loads(json_str)
+            except Exception:
+                pass
+
+    def get(self, uid: int, default=None):
+        return self._data.get(uid, default)
+
+    def __getitem__(self, uid: int):
+        return self._data[uid]
+
+    def __setitem__(self, uid: int, state) -> None:
+        self._data[uid] = state
+        with _db() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO user_states (user_id, state_json) VALUES (?,?)",
+                (uid, json.dumps(state, ensure_ascii=False)),
+            )
+
+    def pop(self, uid: int, *args):
+        result = self._data.pop(uid, *args)
+        with _db() as conn:
+            conn.execute("DELETE FROM user_states WHERE user_id=?", (uid,))
+        return result
+
+    def patch(self, uid: int, **kwargs) -> dict:
+        """Обновляет поля состояния и сохраняет в БД."""
+        state = dict(self._data.get(uid) or {})
+        state.update(kwargs)
+        self[uid] = state
+        return state
+
+
+user_states = _StateStore()
 
 
 # ── Вспомогательная функция для клавиатур ────────────────────────────────────
 def _kb(*rows: list[str], one_time: bool = False) -> str:
-    """Строит JSON-клавиатуру VK из списка строк с кнопками."""
     kb = Keyboard(one_time=one_time)
     for i, row in enumerate(rows):
         if i > 0:
@@ -69,11 +124,6 @@ MAIN_KB = _kb(
     ["⏰ Напоминание", "📌 Дедлайны"],
     ["🔔 Подписки на пары"],
     ["💬 Обратная связь", "❓ Помощь"],
-)
-
-WEEK_KB = _kb(
-    ["📅 Чётная неделя", "📅 Нечётная неделя"],
-    ["◀ Назад"],
 )
 
 DAY_KB = _kb(
@@ -111,6 +161,25 @@ def calendar_kb(year: int, month: int, min_day: int = 1) -> str:
     kb.row()
     kb.add(Text("❌ Отмена"))
     return kb.get_json()
+
+
+def _calendar_nav(uid: int, state: dict, text: str, today: datetime.date) -> tuple[int, int, int]:
+    """Обрабатывает кнопки ◀/▶ календаря. Возвращает (year, month, min_day)."""
+    year, month = state["cal_year"], state["cal_month"]
+    if text == "◀":
+        new_month, new_year = month - 1, year
+        if new_month < 1:
+            new_month, new_year = 12, year - 1
+        if (new_year, new_month) >= (today.year, today.month):
+            year, month = new_year, new_month
+            user_states.patch(uid, cal_year=year, cal_month=month)
+    elif text == "▶":
+        month += 1
+        if month > 12:
+            month, year = 1, year + 1
+        user_states.patch(uid, cal_year=year, cal_month=month)
+    min_day = today.day if (year == today.year and month == today.month) else 1
+    return year, month, min_day
 
 
 # ── Сокращения для длинных названий направлений ──────────────────────────────
@@ -157,7 +226,6 @@ _WORD_ABBREVS: dict[str, str] = {
 
 
 def shorten_direction(name: str, max_len: int = 40) -> str:
-    """Сокращает название направления до max_len символов с помощью аббревиатур."""
     if len(name) <= max_len:
         return name
     result = name
@@ -172,39 +240,39 @@ def shorten_direction(name: str, max_len: int = 40) -> str:
     return result[:max_len - 1] + "…"
 
 
-# ── База данных расписания (s.db) ─────────────────────────────────────────────
+# ── База данных расписания (sсhedule.db) ──────────────────────────────────────
 _dir_label_to_full: dict[int, dict[str, str]] = {}
 
 
 def load_directions() -> dict[int, list[str]]:
-    conn = sqlite3.connect("sсhedule.db")
-    cur = conn.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS schedule (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            course INTEGER, direction TEXT, day TEXT,
-            time TEXT, subject TEXT, teacher TEXT, room TEXT,
-            week TEXT DEFAULT '',
-            class_type TEXT DEFAULT '',
-            date_range TEXT DEFAULT ''
-        )
-    """)
-    existing_cols = {row[1] for row in cur.execute("PRAGMA table_info(schedule)").fetchall()}
-    if "week" not in existing_cols:
-        cur.execute("ALTER TABLE schedule ADD COLUMN week TEXT DEFAULT ''")
-    if "class_type" not in existing_cols:
-        cur.execute("ALTER TABLE schedule ADD COLUMN class_type TEXT DEFAULT ''")
-    if "date_range" not in existing_cols:
-        cur.execute("ALTER TABLE schedule ADD COLUMN date_range TEXT DEFAULT ''")
-    conn.commit()
-    cur.execute("SELECT DISTINCT course, direction FROM schedule ORDER BY course")
+    with _db("sсhedule.db") as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS schedule (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                course INTEGER, direction TEXT, day TEXT,
+                time TEXT, subject TEXT, teacher TEXT, room TEXT,
+                week TEXT DEFAULT '',
+                class_type TEXT DEFAULT '',
+                date_range TEXT DEFAULT ''
+            )
+        """)
+        existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(schedule)").fetchall()}
+        if "week" not in existing_cols:
+            conn.execute("ALTER TABLE schedule ADD COLUMN week TEXT DEFAULT ''")
+        if "class_type" not in existing_cols:
+            conn.execute("ALTER TABLE schedule ADD COLUMN class_type TEXT DEFAULT ''")
+        if "date_range" not in existing_cols:
+            conn.execute("ALTER TABLE schedule ADD COLUMN date_range TEXT DEFAULT ''")
+        rows = conn.execute(
+            "SELECT DISTINCT course, direction FROM schedule ORDER BY course"
+        ).fetchall()
+
     result: dict[int, list[str]] = {}
-    for course, direction in cur.fetchall():
+    for course, direction in rows:
         cleaned = re.sub(r",?\s*\d+\s*курс.*", "", direction).strip()
         result.setdefault(course, [])
         if cleaned not in result[course]:
             result[course].append(cleaned)
-    conn.close()
 
     global _dir_label_to_full
     _dir_label_to_full = {}
@@ -238,29 +306,20 @@ def direction_kb(course: int) -> str:
 
 
 def resolve_direction(text: str, course: int) -> str | None:
-    """Находит полное название направления по метке кнопки."""
     return _dir_label_to_full.get(course, {}).get(text)
 
 
 def get_schedule(course: int, direction: str, day: str, week_type: str) -> str:
-    """
-    Возвращает расписание, отфильтрованное по типу недели.
-    week_type='чёт'   → показывает общие пары и пары чётной недели ([чёт]).
-    week_type='нечет' → показывает общие пары и пары нечётной недели ([нечет]).
-    """
-    conn = sqlite3.connect("sсhedule.db")
-    cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT time, subject, teacher, room, class_type, date_range FROM schedule
-        WHERE course = ? AND LOWER(direction) = LOWER(?) AND LOWER(day) = LOWER(?)
-          AND (week = '' OR week = ?)
-        ORDER BY CAST(SUBSTR(time, 1, INSTR(time, ' ') - 1) AS INTEGER), time
-        """,
-        (course, direction, day, week_type),
-    )
-    rows = cur.fetchall()
-    conn.close()
+    with _db("sсhedule.db") as conn:
+        rows = conn.execute(
+            """
+            SELECT time, subject, teacher, room, class_type, date_range FROM schedule
+            WHERE course = ? AND LOWER(direction) = LOWER(?) AND LOWER(day) = LOWER(?)
+              AND (week = '' OR week = ?)
+            ORDER BY CAST(SUBSTR(time, 1, INSTR(time, ' ') - 1) AS INTEGER), time
+            """,
+            (course, direction, day, week_type),
+        ).fetchall()
 
     if not rows:
         return "На этот день пар нет."
@@ -276,233 +335,187 @@ def get_schedule(course: int, direction: str, day: str, week_type: str) -> str:
 
 # ── База данных заметок, напоминаний, подписок (notes.db) ────────────────────
 def create_tables() -> None:
-    conn = sqlite3.connect("notes.db")
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS notes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER, note_text TEXT, timestamp TEXT
-        );
-        CREATE TABLE IF NOT EXISTS reminders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER, reminder_text TEXT,
-            remind_at TEXT, notified INTEGER DEFAULT 0
-        );
-        CREATE TABLE IF NOT EXISTS subscriptions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER, course INTEGER, direction TEXT
-        );
-        CREATE TABLE IF NOT EXISTS sent_class_notifications (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER, schedule_row_id INTEGER,
-            class_date TEXT, class_time TEXT, sent_at TEXT
-        );
-        CREATE TABLE IF NOT EXISTS feedback (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER, text TEXT, timestamp TEXT
-        );
-        CREATE TABLE IF NOT EXISTS deadlines (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            subject TEXT,
-            description TEXT,
-            deadline_at TEXT,
-            notified_1day INTEGER DEFAULT 0,
-            notified_1hour INTEGER DEFAULT 0
-        );
-    """)
-    conn.commit()
-    conn.close()
+    with _db() as conn:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS user_states (
+                user_id INTEGER PRIMARY KEY,
+                state_json TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER, note_text TEXT, timestamp TEXT
+            );
+            CREATE TABLE IF NOT EXISTS reminders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER, reminder_text TEXT,
+                remind_at TEXT, notified INTEGER DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS subscriptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER, course INTEGER, direction TEXT
+            );
+            CREATE TABLE IF NOT EXISTS sent_class_notifications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER, schedule_row_id INTEGER,
+                class_date TEXT, class_time TEXT, sent_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS feedback (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER, text TEXT, timestamp TEXT
+            );
+            CREATE TABLE IF NOT EXISTS deadlines (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                subject TEXT,
+                description TEXT,
+                deadline_at TEXT,
+                notified_1day INTEGER DEFAULT 0,
+                notified_1hour INTEGER DEFAULT 0
+            );
+        """)
 
 
 # Заметки
 def add_note(uid: int, text: str) -> None:
-    conn = sqlite3.connect("notes.db")
-    conn.execute(
-        "INSERT INTO notes (user_id, note_text, timestamp) VALUES (?,?,?)",
-        (uid, text, now_msk().isoformat(timespec="seconds")),
-    )
-    conn.commit()
-    conn.close()
+    with _db() as conn:
+        conn.execute(
+            "INSERT INTO notes (user_id, note_text, timestamp) VALUES (?,?,?)",
+            (uid, text, now_msk().isoformat(timespec="seconds")),
+        )
 
 
 def get_notes(uid: int) -> list:
-    conn = sqlite3.connect("notes.db")
-    rows = conn.execute(
-        "SELECT id, note_text, timestamp FROM notes WHERE user_id=? ORDER BY id DESC",
-        (uid,),
-    ).fetchall()
-    conn.close()
-    return rows
+    with _db() as conn:
+        return conn.execute(
+            "SELECT id, note_text, timestamp FROM notes WHERE user_id=? ORDER BY id DESC",
+            (uid,),
+        ).fetchall()
 
 
 def delete_notes(ids: list[int]) -> None:
     if not ids:
         return
-    conn = sqlite3.connect("notes.db")
-    conn.executemany("DELETE FROM notes WHERE id=?", ((i,) for i in ids))
-    conn.commit()
-    conn.close()
+    with _db() as conn:
+        conn.executemany("DELETE FROM notes WHERE id=?", ((i,) for i in ids))
 
 
 # Напоминания
 def add_reminder(uid: int, text: str, remind_at: str) -> None:
-    conn = sqlite3.connect("notes.db")
-    conn.execute(
-        "INSERT INTO reminders (user_id, reminder_text, remind_at, notified) VALUES (?,?,?,0)",
-        (uid, text, remind_at),
-    )
-    conn.commit()
-    conn.close()
+    with _db() as conn:
+        conn.execute(
+            "INSERT INTO reminders (user_id, reminder_text, remind_at, notified) VALUES (?,?,?,0)",
+            (uid, text, remind_at),
+        )
 
 
 def get_pending_reminders() -> list:
-    conn = sqlite3.connect("notes.db")
-    rows = conn.execute(
-        "SELECT id, user_id, reminder_text, remind_at FROM reminders WHERE notified=0"
-    ).fetchall()
-    conn.close()
-    return rows
+    with _db() as conn:
+        return conn.execute(
+            "SELECT id, user_id, reminder_text, remind_at FROM reminders WHERE notified=0"
+        ).fetchall()
 
 
 def mark_reminder_sent(rid: int) -> None:
-    conn = sqlite3.connect("notes.db")
-    conn.execute("UPDATE reminders SET notified=1 WHERE id=?", (rid,))
-    conn.commit()
-    conn.close()
+    with _db() as conn:
+        conn.execute("UPDATE reminders SET notified=1 WHERE id=?", (rid,))
 
 
 # Подписки
 def add_subscription(uid: int, course: int, direction: str) -> None:
-    conn = sqlite3.connect("notes.db")
-    conn.execute(
-        "INSERT INTO subscriptions (user_id, course, direction) VALUES (?,?,?)",
-        (uid, course, direction),
-    )
-    conn.commit()
-    conn.close()
+    with _db() as conn:
+        conn.execute(
+            "INSERT INTO subscriptions (user_id, course, direction) VALUES (?,?,?)",
+            (uid, course, direction),
+        )
 
 
 def get_user_subs(uid: int) -> list:
-    conn = sqlite3.connect("notes.db")
-    rows = conn.execute(
-        "SELECT id, course, direction FROM subscriptions WHERE user_id=? ORDER BY id",
-        (uid,),
-    ).fetchall()
-    conn.close()
-    return rows
+    with _db() as conn:
+        return conn.execute(
+            "SELECT id, course, direction FROM subscriptions WHERE user_id=? ORDER BY id",
+            (uid,),
+        ).fetchall()
 
 
 def get_all_subs() -> list:
-    conn = sqlite3.connect("notes.db")
-    rows = conn.execute(
-        "SELECT id, user_id, course, direction FROM subscriptions"
-    ).fetchall()
-    conn.close()
-    return rows
+    with _db() as conn:
+        return conn.execute(
+            "SELECT id, user_id, course, direction FROM subscriptions"
+        ).fetchall()
 
 
 def delete_sub(sid: int) -> None:
-    conn = sqlite3.connect("notes.db")
-    conn.execute("DELETE FROM subscriptions WHERE id=?", (sid,))
-    conn.commit()
-    conn.close()
+    with _db() as conn:
+        conn.execute("DELETE FROM subscriptions WHERE id=?", (sid,))
 
 
 # Фидбэк
 def add_feedback(uid: int, text: str) -> None:
-    conn = sqlite3.connect("notes.db")
-    conn.execute(
-        "INSERT INTO feedback (user_id, text, timestamp) VALUES (?,?,?)",
-        (uid, text, now_msk().isoformat(timespec="seconds")),
-    )
-    conn.commit()
-    conn.close()
-
-
-def get_feedback(limit: int = 20) -> list:
-    conn = sqlite3.connect("notes.db")
-    rows = conn.execute(
-        "SELECT id, user_id, text, timestamp FROM feedback ORDER BY id DESC LIMIT ?",
-        (limit,),
-    ).fetchall()
-    conn.close()
-    return rows
+    with _db() as conn:
+        conn.execute(
+            "INSERT INTO feedback (user_id, text, timestamp) VALUES (?,?,?)",
+            (uid, text, now_msk().isoformat(timespec="seconds")),
+        )
 
 
 # Дедлайны
 def add_deadline(uid: int, subject: str, description: str, deadline_at: str) -> None:
-    conn = sqlite3.connect("notes.db")
-    conn.execute(
-        "INSERT INTO deadlines (user_id, subject, description, deadline_at) VALUES (?,?,?,?)",
-        (uid, subject, description, deadline_at),
-    )
-    conn.commit()
-    conn.close()
+    with _db() as conn:
+        conn.execute(
+            "INSERT INTO deadlines (user_id, subject, description, deadline_at) VALUES (?,?,?,?)",
+            (uid, subject, description, deadline_at),
+        )
 
 
 def get_deadlines(uid: int) -> list:
-    conn = sqlite3.connect("notes.db")
-    rows = conn.execute(
-        "SELECT id, subject, description, deadline_at FROM deadlines "
-        "WHERE user_id=? ORDER BY deadline_at ASC",
-        (uid,),
-    ).fetchall()
-    conn.close()
-    return rows
+    with _db() as conn:
+        return conn.execute(
+            "SELECT id, subject, description, deadline_at FROM deadlines "
+            "WHERE user_id=? ORDER BY deadline_at ASC",
+            (uid,),
+        ).fetchall()
 
 
 def delete_deadline(did: int) -> None:
-    conn = sqlite3.connect("notes.db")
-    conn.execute("DELETE FROM deadlines WHERE id=?", (did,))
-    conn.commit()
-    conn.close()
+    with _db() as conn:
+        conn.execute("DELETE FROM deadlines WHERE id=?", (did,))
 
 
 def get_all_pending_deadlines() -> list:
-    """Возвращает все дедлайны, по которым ещё не отправлены все уведомления."""
-    conn = sqlite3.connect("notes.db")
-    rows = conn.execute(
-        "SELECT id, user_id, subject, description, deadline_at, notified_1day, notified_1hour "
-        "FROM deadlines WHERE notified_1hour=0 OR notified_1day=0"
-    ).fetchall()
-    conn.close()
-    return rows
+    with _db() as conn:
+        return conn.execute(
+            "SELECT id, user_id, subject, description, deadline_at, notified_1day, notified_1hour "
+            "FROM deadlines WHERE notified_1hour=0 OR notified_1day=0"
+        ).fetchall()
 
 
 def mark_deadline_1day(did: int) -> None:
-    conn = sqlite3.connect("notes.db")
-    conn.execute("UPDATE deadlines SET notified_1day=1 WHERE id=?", (did,))
-    conn.commit()
-    conn.close()
+    with _db() as conn:
+        conn.execute("UPDATE deadlines SET notified_1day=1 WHERE id=?", (did,))
 
 
 def mark_deadline_1hour(did: int) -> None:
-    conn = sqlite3.connect("notes.db")
-    conn.execute("UPDATE deadlines SET notified_1hour=1 WHERE id=?", (did,))
-    conn.commit()
-    conn.close()
+    with _db() as conn:
+        conn.execute("UPDATE deadlines SET notified_1hour=1 WHERE id=?", (did,))
 
 
 def _notif_sent(uid: int, row_id: int, date: str, time: str) -> bool:
-    conn = sqlite3.connect("notes.db")
-    exists = conn.execute(
-        "SELECT 1 FROM sent_class_notifications "
-        "WHERE user_id=? AND schedule_row_id=? AND class_date=? AND class_time=?",
-        (uid, row_id, date, time),
-    ).fetchone()
-    conn.close()
+    with _db() as conn:
+        exists = conn.execute(
+            "SELECT 1 FROM sent_class_notifications "
+            "WHERE user_id=? AND schedule_row_id=? AND class_date=? AND class_time=?",
+            (uid, row_id, date, time),
+        ).fetchone()
     return exists is not None
 
 
 def _mark_notif(uid: int, row_id: int, date: str, time: str) -> None:
-    conn = sqlite3.connect("notes.db")
-    conn.execute(
-        "INSERT INTO sent_class_notifications "
-        "(user_id, schedule_row_id, class_date, class_time, sent_at) VALUES (?,?,?,?,?)",
-        (uid, row_id, date, time, now_msk().isoformat(timespec="seconds")),
-    )
-    conn.commit()
-    conn.close()
+    with _db() as conn:
+        conn.execute(
+            "INSERT INTO sent_class_notifications "
+            "(user_id, schedule_row_id, class_date, class_time, sent_at) VALUES (?,?,?,?,?)",
+            (uid, row_id, date, time, now_msk().isoformat(timespec="seconds")),
+        )
 
 
 # ── Отправка сообщения пользователю ──────────────────────────────────────────
@@ -534,10 +547,15 @@ async def reminder_checker() -> None:
 
 
 async def deadline_checker() -> None:
-    """Каждую минуту проверяет дедлайны и отправляет напоминания за 1 день и за 1 час."""
+    """Каждую минуту проверяет дедлайны; удаляет просроченные старше 7 дней."""
     while True:
         await asyncio.sleep(60)
         now = now_msk()
+
+        cutoff = (now - datetime.timedelta(days=7)).strftime("%Y-%m-%d %H:%M")
+        with _db() as conn:
+            conn.execute("DELETE FROM deadlines WHERE deadline_at < ?", (cutoff,))
+
         for did, uid, subject, description, deadline_at_str, n_1day, n_1hour in get_all_pending_deadlines():
             try:
                 deadline_at = datetime.datetime.strptime(deadline_at_str, "%Y-%m-%d %H:%M")
@@ -547,13 +565,11 @@ async def deadline_checker() -> None:
             delta = deadline_at - now
             total_seconds = delta.total_seconds()
 
-            # Уже прошёл дедлайн — пропускаем старые
             if total_seconds < -3600:
                 continue
 
             desc_line = f"\n📝 {description}" if description else ""
 
-            # Уведомление за 1 день (окно: от 25 до 23 часов до дедлайна)
             if not n_1day and datetime.timedelta(hours=23) <= delta <= datetime.timedelta(hours=25):
                 try:
                     deadline_fmt = deadline_at.strftime("%d.%m.%Y %H:%M")
@@ -567,7 +583,6 @@ async def deadline_checker() -> None:
                 except Exception:
                     logging.exception(f"Не удалось отправить уведомление о дедлайне id={did} (1 день)")
 
-            # Уведомление за 1 час (окно: от 70 до 50 минут до дедлайна)
             if not n_1hour and datetime.timedelta(minutes=50) <= delta <= datetime.timedelta(minutes=70):
                 try:
                     deadline_fmt = deadline_at.strftime("%d.%m.%Y %H:%M")
@@ -583,7 +598,7 @@ async def deadline_checker() -> None:
 
 
 async def class_notification_checker() -> None:
-    """Каждые 30 секунд проверяет подписки и рассылает уведомления за 10 мин до пары."""
+    """Каждые 30 секунд рассылает уведомления за 10 мин до пары; чистит записи старше 2 дней."""
     ru_days = {
         "Monday": "Понедельник", "Tuesday": "Вторник", "Wednesday": "Среда",
         "Thursday": "Четверг", "Friday": "Пятница",
@@ -594,19 +609,25 @@ async def class_notification_checker() -> None:
     while True:
         await asyncio.sleep(30)
         now = now_msk()
+
+        cutoff = (now - datetime.timedelta(days=2)).date().isoformat()
+        with _db() as conn:
+            conn.execute(
+                "DELETE FROM sent_class_notifications WHERE class_date < ?", (cutoff,)
+            )
+
         db_day = ru_days.get(now.strftime("%A"), now.strftime("%A"))
         week = current_week_type()
         exclude_prefix = "[нечет]%" if week == "чёт" else "[чёт]%"
 
         for _sid, uid, course, direction in get_all_subs():
-            conn = sqlite3.connect("sсhedule.db")
-            rows = conn.execute(
-                "SELECT rowid, time, subject, teacher, room FROM schedule "
-                "WHERE course=? AND LOWER(direction)=LOWER(?) "
-                "AND LOWER(day)=LOWER(?) AND subject NOT LIKE ?",
-                (course, direction, db_day, exclude_prefix),
-            ).fetchall()
-            conn.close()
+            with _db("sсhedule.db") as conn:
+                rows = conn.execute(
+                    "SELECT rowid, time, subject, teacher, room FROM schedule "
+                    "WHERE course=? AND LOWER(direction)=LOWER(?) "
+                    "AND LOWER(day)=LOWER(?) AND subject NOT LIKE ?",
+                    (course, direction, db_day, exclude_prefix),
+                ).fetchall()
 
             for row_id, time_field, subject, teacher, room in rows:
                 m = re.search(r"(\d{1,2}[:.]\d{2})", time_field or "")
@@ -672,7 +693,6 @@ async def handle(message: Message) -> None:
         await message.answer("Главное меню:", keyboard=MAIN_KB)
         return
 
-
     # ── РАСПИСАНИЕ ────────────────────────────────────────────────────────────
     if text == "📅 Расписание":
         if not directions_by_course:
@@ -696,7 +716,7 @@ async def handle(message: Message) -> None:
             await message.answer("Главное меню:", keyboard=MAIN_KB)
             return
         if text.isdigit() and int(text) in directions_by_course:
-            state.update(step="direction", course=int(text))
+            user_states.patch(uid, step="direction", course=int(text))
             await message.answer("Выбери направление:", keyboard=direction_kb(int(text)))
             return
         await message.answer("Выбери курс из кнопок ниже:", keyboard=course_kb())
@@ -705,12 +725,12 @@ async def handle(message: Message) -> None:
     if isinstance(state, dict) and state.get("step") == "direction":
         course = state["course"]
         if text == "◀ Назад":
-            state["step"] = "course"
+            user_states.patch(uid, step="course")
             await message.answer("Выбери курс:", keyboard=course_kb())
             return
         direction = resolve_direction(text, course)
         if direction:
-            state.update(step="day", direction=direction)
+            user_states.patch(uid, step="day", direction=direction)
             await message.answer("Выбери день недели:", keyboard=DAY_KB)
             return
         await message.answer("Выбери направление из кнопок:", keyboard=direction_kb(course))
@@ -721,7 +741,7 @@ async def handle(message: Message) -> None:
         direction = state["direction"]
         week_type = state["week_type"]
         if text == "◀ Назад":
-            state.update(step="direction")
+            user_states.patch(uid, step="direction")
             await message.answer("Выбери направление:", keyboard=direction_kb(course))
             return
         if text in _DAYS:
@@ -765,7 +785,7 @@ async def handle(message: Message) -> None:
         ans = "📋 Твои заметки:\n\n"
         note_map = {}
         for i, (nid, note_text, ts) in enumerate(notes, 1):
-            note_map[i] = nid
+            note_map[str(i)] = nid
             ans += f"[{i}] {note_text}\n📅 {ts}\n\n"
         ans += "Введи номер заметки для удаления (можно несколько через запятую).\nИли нажми «◀ Назад»."
         user_states[uid] = {"state": "view_notes", "note_map": note_map}
@@ -791,13 +811,13 @@ async def handle(message: Message) -> None:
             )
             return
         note_map = state["note_map"]
-        to_del_ids = [note_map[n] for n in nums if n in note_map]
-        not_found = [n for n in nums if n not in note_map]
+        to_del_ids = [note_map[str(n)] for n in nums if str(n) in note_map]
+        not_found = [n for n in nums if str(n) not in note_map]
         if to_del_ids:
             delete_notes(to_del_ids)
         resp_parts = []
         if to_del_ids:
-            resp_parts.append(f"✅ Удалены заметки: {', '.join(map(str, [n for n in nums if n in note_map]))}")
+            resp_parts.append(f"✅ Удалены заметки: {', '.join(str(n) for n in nums if str(n) in note_map)}")
         if not_found:
             resp_parts.append(f"❌ Не найдены: {', '.join(map(str, not_found))}")
         remaining = get_notes(uid)
@@ -824,7 +844,7 @@ async def handle(message: Message) -> None:
             await message.answer("Отменено.", keyboard=MAIN_KB)
             return
         now = now_msk()
-        state.update(step="rem_date", reminder_text=text, cal_year=now.year, cal_month=now.month)
+        user_states.patch(uid, step="rem_date", reminder_text=text, cal_year=now.year, cal_month=now.month)
         await message.answer("📅 Выбери дату:", keyboard=calendar_kb(now.year, now.month, now.day))
         return
 
@@ -833,29 +853,14 @@ async def handle(message: Message) -> None:
             user_states.pop(uid, None)
             await message.answer("Отменено.", keyboard=MAIN_KB)
             return
-        now_dt = now_msk()
-        today = now_dt.date()
+        today = now_msk().date()
+        state = user_states.get(uid)
+        if text in ("◀", "▶"):
+            year, month, min_day = _calendar_nav(uid, state, text, today)
+            await message.answer("📅 Выбери дату:", keyboard=calendar_kb(year, month, min_day))
+            return
         year, month = state["cal_year"], state["cal_month"]
         min_day = today.day if (year == today.year and month == today.month) else 1
-        if text == "◀":
-            new_month, new_year = month - 1, year
-            if new_month < 1:
-                new_month, new_year = 12, year - 1
-            if (new_year, new_month) >= (today.year, today.month):
-                month, year = new_month, new_year
-                state.update(cal_year=year, cal_month=month)
-                min_day = today.day if (year == today.year and month == today.month) else 1
-            await message.answer("📅 Выбери дату:", keyboard=calendar_kb(year, month, min_day))
-            return
-        if text == "▶":
-            month += 1
-            if month > 12:
-                month, year = 1, year + 1
-            state.update(cal_year=year, cal_month=month)
-            min_day = today.day if (year == today.year and month == today.month) else 1
-            await message.answer("📅 Выбери дату:", keyboard=calendar_kb(year, month, min_day))
-            return
-        # Ignore clicks on the month/year label button
         if text == f"{_MONTH_NAMES[month - 1]} {year}":
             await message.answer("📅 Выбери дату:", keyboard=calendar_kb(year, month, min_day))
             return
@@ -865,7 +870,7 @@ async def handle(message: Message) -> None:
             selected = datetime.date(year, month, day)
             if 1 <= day <= days_in_month and selected >= today:
                 date_str = f"{year:04d}-{month:02d}-{day:02d}"
-                state.update(step="rem_clock", date_str=date_str)
+                user_states.patch(uid, step="rem_clock", date_str=date_str)
                 await message.answer(
                     f"✅ Дата: {day} {_MONTH_NAMES[month - 1]} {year}\n\n"
                     "⏰ Теперь введи время в формате ЧЧ:ММ\nПример: 09:00",
@@ -909,9 +914,11 @@ async def handle(message: Message) -> None:
     if text == "📌 Дедлайны":
         deadlines = get_deadlines(uid)
         now = now_msk()
+        dl_map = {}
         if deadlines:
             lines = ["📌 Твои дедлайны:\n"]
-            for did, subj, desc, dl_at in deadlines:
+            for i, (did, subj, desc, dl_at) in enumerate(deadlines, 1):
+                dl_map[str(i)] = did
                 try:
                     dl_dt = datetime.datetime.strptime(dl_at, "%Y-%m-%d %H:%M")
                     dl_fmt = dl_dt.strftime("%d.%m.%Y %H:%M")
@@ -923,22 +930,21 @@ async def handle(message: Message) -> None:
                     elif delta.total_seconds() < 86400:
                         status = "🟡 < 1 дня"
                     else:
-                        days = delta.days
-                        status = f"🟢 {days} дн."
+                        status = f"🟢 {delta.days} дн."
                 except ValueError:
                     dl_fmt = dl_at
                     status = ""
                 desc_line = f"\n   {desc}" if desc else ""
-                lines.append(f"[{did}] {subj}{desc_line}\n   📅 {dl_fmt}  {status}")
+                lines.append(f"[{i}] {subj}{desc_line}\n   📅 {dl_fmt}  {status}")
             ans = "\n\n".join(lines)
-            ans += "\n\nВведи ID для удаления или добавь новый."
+            ans += "\n\nВведи номер для удаления или добавь новый."
         else:
             ans = "У тебя пока нет дедлайнов.\n\nДобавь первый — и я напомню за день и за час до срока."
-        user_states[uid] = "deadlines"
+        user_states[uid] = {"state": "deadlines", "dl_map": dl_map}
         await message.answer(ans, keyboard=_kb(["➕ Добавить дедлайн"], ["◀ Назад"]))
         return
 
-    if state == "deadlines":
+    if isinstance(state, dict) and state.get("state") == "deadlines":
         if text == "◀ Назад":
             user_states.pop(uid, None)
             await message.answer("Главное меню:", keyboard=MAIN_KB)
@@ -951,21 +957,20 @@ async def handle(message: Message) -> None:
             )
             return
         if text.isdigit():
-            did = int(text)
-            deadlines = get_deadlines(uid)
-            ids = {d[0] for d in deadlines}
-            if did in ids:
-                delete_deadline(did)
+            dl_map = state.get("dl_map", {})
+            num = int(text)
+            if str(num) in dl_map:
+                delete_deadline(dl_map[str(num)])
                 user_states.pop(uid, None)
-                await message.answer(f"✅ Дедлайн [{did}] удалён.", keyboard=MAIN_KB)
+                await message.answer(f"✅ Дедлайн [{num}] удалён.", keyboard=MAIN_KB)
             else:
                 await message.answer(
-                    "❌ Дедлайн с таким ID не найден.",
+                    "❌ Дедлайн с таким номером не найден.",
                     keyboard=_kb(["➕ Добавить дедлайн"], ["◀ Назад"]),
                 )
             return
         await message.answer(
-            "Введи ID дедлайна для удаления или нажми кнопку.",
+            "Введи номер дедлайна для удаления или нажми кнопку.",
             keyboard=_kb(["➕ Добавить дедлайн"], ["◀ Назад"]),
         )
         return
@@ -978,7 +983,7 @@ async def handle(message: Message) -> None:
         if not text:
             await message.answer("Название не может быть пустым. Попробуй ещё раз:", keyboard=CANCEL_KB)
             return
-        state.update(step="dl_desc", dl_subject=text)
+        user_states.patch(uid, step="dl_desc", dl_subject=text)
         await message.answer(
             f"📌 Предмет: {text}\n\nШаг 2/4 — Добавь описание (необязательно):\nНапример, «Решить задачи 1-5» или нажми «Пропустить»",
             keyboard=_kb(["⏩ Пропустить"], ["❌ Отмена"]),
@@ -992,9 +997,9 @@ async def handle(message: Message) -> None:
             return
         desc = "" if text == "⏩ Пропустить" else text
         now = now_msk()
-        state.update(step="dl_date", dl_desc=desc, cal_year=now.year, cal_month=now.month)
+        user_states.patch(uid, step="dl_date", dl_desc=desc, cal_year=now.year, cal_month=now.month)
         await message.answer(
-            f"Шаг 3/4 — Выбери дату дедлайна:",
+            "Шаг 3/4 — Выбери дату дедлайна:",
             keyboard=calendar_kb(now.year, now.month, now.day),
         )
         return
@@ -1004,28 +1009,14 @@ async def handle(message: Message) -> None:
             user_states.pop(uid, None)
             await message.answer("Отменено.", keyboard=MAIN_KB)
             return
-        now_dt = now_msk()
-        today = now_dt.date()
+        today = now_msk().date()
+        state = user_states.get(uid)
+        if text in ("◀", "▶"):
+            year, month, min_day = _calendar_nav(uid, state, text, today)
+            await message.answer("📅 Выбери дату:", keyboard=calendar_kb(year, month, min_day))
+            return
         year, month = state["cal_year"], state["cal_month"]
         min_day = today.day if (year == today.year and month == today.month) else 1
-        if text == "◀":
-            new_month, new_year = month - 1, year
-            if new_month < 1:
-                new_month, new_year = 12, year - 1
-            if (new_year, new_month) >= (today.year, today.month):
-                month, year = new_month, new_year
-                state.update(cal_year=year, cal_month=month)
-                min_day = today.day if (year == today.year and month == today.month) else 1
-            await message.answer("📅 Выбери дату:", keyboard=calendar_kb(year, month, min_day))
-            return
-        if text == "▶":
-            month += 1
-            if month > 12:
-                month, year = 1, year + 1
-            state.update(cal_year=year, cal_month=month)
-            min_day = today.day if (year == today.year and month == today.month) else 1
-            await message.answer("📅 Выбери дату:", keyboard=calendar_kb(year, month, min_day))
-            return
         if text == f"{_MONTH_NAMES[month - 1]} {year}":
             await message.answer("📅 Выбери дату:", keyboard=calendar_kb(year, month, min_day))
             return
@@ -1035,7 +1026,7 @@ async def handle(message: Message) -> None:
             selected = datetime.date(year, month, day)
             if 1 <= day <= days_in_month and selected >= today:
                 date_str = f"{year:04d}-{month:02d}-{day:02d}"
-                state.update(step="dl_time", dl_date=date_str)
+                user_states.patch(uid, step="dl_time", dl_date=date_str)
                 await message.answer(
                     f"✅ Дата: {day} {_MONTH_NAMES[month - 1]} {year}\n\n"
                     "Шаг 4/4 — Введи время дедлайна в формате ЧЧ:ММ\n"
@@ -1086,21 +1077,23 @@ async def handle(message: Message) -> None:
     # ── ПОДПИСКИ НА ПАРЫ ──────────────────────────────────────────────────────
     if text == "🔔 Подписки на пары":
         subs = get_user_subs(uid)
+        sub_map = {}
         if subs:
             ans = "🔔 Твои подписки на уведомления о парах:\n\n"
-            for sid, course, direction in subs:
-                ans += f"[{sid}] {course} курс — {direction}\n"
-            ans += "\nВведи ID для удаления подписки, или добавь новую."
+            for i, (sid, course, direction) in enumerate(subs, 1):
+                sub_map[str(i)] = sid
+                ans += f"[{i}] {course} курс — {direction}\n"
+            ans += "\nВведи номер для удаления подписки, или добавь новую."
         else:
             ans = (
                 "У тебя пока нет подписок.\n\n"
                 "Добавь подписку — и я буду напоминать о каждой паре за 10 минут."
             )
-        user_states[uid] = "subs"
+        user_states[uid] = {"state": "subs", "sub_map": sub_map}
         await message.answer(ans, keyboard=_kb(["➕ Добавить подписку"], ["◀ Назад"]))
         return
 
-    if state == "subs":
+    if isinstance(state, dict) and state.get("state") == "subs":
         if text == "◀ Назад":
             user_states.pop(uid, None)
             await message.answer("Главное меню:", keyboard=MAIN_KB)
@@ -1110,26 +1103,36 @@ async def handle(message: Message) -> None:
             await message.answer("Выбери курс:", keyboard=course_kb())
             return
         if text.isdigit():
-            delete_sub(int(text))
-            user_states.pop(uid, None)
-            await message.answer(f"✅ Подписка {text} удалена.", keyboard=MAIN_KB)
+            sub_map = state.get("sub_map", {})
+            num = int(text)
+            if str(num) in sub_map:
+                delete_sub(sub_map[str(num)])
+                user_states.pop(uid, None)
+                await message.answer(f"✅ Подписка [{num}] удалена.", keyboard=MAIN_KB)
+            else:
+                await message.answer(
+                    "❌ Подписка с таким номером не найдена.",
+                    keyboard=_kb(["➕ Добавить подписку"], ["◀ Назад"]),
+                )
             return
         await message.answer(
-            "Введи ID подписки для удаления или нажми кнопку.",
+            "Введи номер подписки для удаления или нажми кнопку.",
             keyboard=_kb(["➕ Добавить подписку"], ["◀ Назад"]),
         )
         return
 
     if isinstance(state, dict) and state.get("step") == "sub_course":
         if text == "◀ Назад":
-            user_states[uid] = "subs"
+            subs = get_user_subs(uid)
+            sub_map = {str(i): sid for i, (sid, _, _) in enumerate(subs, 1)}
+            user_states[uid] = {"state": "subs", "sub_map": sub_map}
             await message.answer(
                 "Управление подписками:",
                 keyboard=_kb(["➕ Добавить подписку"], ["◀ Назад"]),
             )
             return
         if text.isdigit() and int(text) in directions_by_course:
-            state.update(step="sub_direction", course=int(text))
+            user_states.patch(uid, step="sub_direction", course=int(text))
             await message.answer("Выбери направление:", keyboard=direction_kb(int(text)))
             return
         await message.answer("Выбери курс из кнопок:", keyboard=course_kb())
@@ -1138,7 +1141,7 @@ async def handle(message: Message) -> None:
     if isinstance(state, dict) and state.get("step") == "sub_direction":
         course = state["course"]
         if text == "◀ Назад":
-            state["step"] = "sub_course"
+            user_states.patch(uid, step="sub_course")
             await message.answer("Выбери курс:", keyboard=course_kb())
             return
         direction = resolve_direction(text, course)
@@ -1184,7 +1187,10 @@ async def handle(message: Message) -> None:
 
     # ── АДМИН ─────────────────────────────────────────────────────────────────
     if text.lower() == "/feedback" and uid == ADMIN_ID:
-        rows = get_feedback()
+        with _db() as conn:
+            rows = conn.execute(
+                "SELECT id, user_id, text, timestamp FROM feedback ORDER BY id DESC LIMIT 20"
+            ).fetchall()
         if not rows:
             await message.answer("Заявок пока нет.")
         else:
@@ -1232,6 +1238,7 @@ async def handle(message: Message) -> None:
 # ── Запуск ────────────────────────────────────────────────────────────────────
 def main() -> None:
     create_tables()
+    user_states.load_all()
     bot.loop_wrapper.add_task(reminder_checker())
     bot.loop_wrapper.add_task(class_notification_checker())
     bot.loop_wrapper.add_task(deadline_checker())
