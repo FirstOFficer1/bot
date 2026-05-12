@@ -361,10 +361,6 @@ def create_tables() -> None:
                 user_id INTEGER, schedule_row_id INTEGER,
                 class_date TEXT, class_time TEXT, sent_at TEXT
             );
-            CREATE TABLE IF NOT EXISTS feedback (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER, text TEXT, timestamp TEXT
-            );
             CREATE TABLE IF NOT EXISTS deadlines (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER,
@@ -454,15 +450,6 @@ def get_all_subs() -> list:
 def delete_sub(sid: int) -> None:
     with _db() as conn:
         conn.execute("DELETE FROM subscriptions WHERE id=?", (sid,))
-
-
-# Фидбэк
-def add_feedback(uid: int, text: str) -> None:
-    with _db() as conn:
-        conn.execute(
-            "INSERT INTO feedback (user_id, text, timestamp) VALUES (?,?,?)",
-            (uid, text, now_msk().isoformat(timespec="seconds")),
-        )
 
 
 # Дедлайны
@@ -1245,8 +1232,22 @@ async def handle(message: Message) -> None:
             await message.answer("Главное меню:", keyboard=MAIN_KB)
             return
         if text == "➕ Добавить подписку":
-            user_states[uid] = {"step": "sub_course"}
-            await message.answer("Выбери курс:", keyboard=course_kb())
+            pref = get_user_pref(uid)
+            if pref:
+                pref_course, pref_dir = pref
+                user_states[uid] = {"step": "sub_quick", "pref_course": pref_course, "pref_dir": pref_dir}
+                await message.answer(
+                    f"Подписаться на уведомления?\n\n"
+                    f"📌 {pref_course} курс — {pref_dir}",
+                    keyboard=_kb(
+                        [f"✅ {pref_course} курс — {pref_dir[:25]}"],
+                        ["🔄 Выбрать другое"],
+                        ["◀ Назад"],
+                    ),
+                )
+            else:
+                user_states[uid] = {"step": "sub_course"}
+                await message.answer("Выбери курс:", keyboard=course_kb())
             return
         if text.isdigit():
             sub_map = state.get("sub_map", {})
@@ -1264,6 +1265,48 @@ async def handle(message: Message) -> None:
         await message.answer(
             "Введи номер подписки для удаления или нажми кнопку.",
             keyboard=_kb(["➕ Добавить подписку"], ["◀ Назад"]),
+        )
+        return
+
+    if isinstance(state, dict) and state.get("step") == "sub_quick":
+        pref_course = state["pref_course"]
+        pref_dir = state["pref_dir"]
+        if text == "◀ Назад":
+            subs = get_user_subs(uid)
+            sub_map = {str(i): sid for i, (sid, _, _) in enumerate(subs, 1)}
+            user_states[uid] = {"state": "subs", "sub_map": sub_map}
+            await message.answer(
+                "Управление подписками:",
+                keyboard=_kb(["➕ Добавить подписку"], ["◀ Назад"]),
+            )
+            return
+        if text == "🔄 Выбрать другое":
+            user_states[uid] = {"step": "sub_course"}
+            await message.answer("Выбери курс:", keyboard=course_kb())
+            return
+        if text.startswith("✅"):
+            if sub_exists(uid, pref_course, pref_dir):
+                user_states.pop(uid, None)
+                await message.answer(
+                    f"ℹ️ Ты уже подписан на {pref_course} курс — {pref_dir}.",
+                    keyboard=MAIN_KB,
+                )
+            else:
+                add_subscription(uid, pref_course, pref_dir)
+                user_states.pop(uid, None)
+                await message.answer(
+                    f"✅ Подписка добавлена!\n{pref_course} курс — {pref_dir}\n\n"
+                    "Буду напоминать о каждой паре за 10 минут до начала.",
+                    keyboard=MAIN_KB,
+                )
+            return
+        await message.answer(
+            "Нажми кнопку ниже:",
+            keyboard=_kb(
+                [f"✅ {pref_course} курс — {pref_dir[:25]}"],
+                ["🔄 Выбрать другое"],
+                ["◀ Назад"],
+            ),
         )
         return
 
@@ -1326,7 +1369,6 @@ async def handle(message: Message) -> None:
             await message.answer("Отменено.", keyboard=MAIN_KB)
             return
         if text:
-            add_feedback(uid, text)
             user_states.pop(uid, None)
             await message.answer("✅ Спасибо! Твоё сообщение получено.", keyboard=MAIN_KB)
             if ADMIN_ID:
@@ -1336,21 +1378,6 @@ async def handle(message: Message) -> None:
                     logging.exception("Не удалось переслать фидбэк админу")
         else:
             await message.answer("Сообщение не может быть пустым. Попробуй ещё раз:", keyboard=CANCEL_KB)
-        return
-
-    # ── АДМИН ─────────────────────────────────────────────────────────────────
-    if text.lower() == "/feedback" and uid == ADMIN_ID:
-        with _db() as conn:
-            rows = conn.execute(
-                "SELECT id, user_id, text, timestamp FROM feedback ORDER BY id DESC LIMIT 20"
-            ).fetchall()
-        if not rows:
-            await message.answer("Заявок пока нет.")
-        else:
-            lines = [f"📋 Последние заявки ({len(rows)}):\n"]
-            for fid, fuid, ftext, fts in rows:
-                lines.append(f"[{fid}] id{fuid} · {fts}\n{ftext}\n")
-            await message.answer("\n".join(lines))
         return
 
     # ── ПОМОЩЬ ────────────────────────────────────────────────────────────────
