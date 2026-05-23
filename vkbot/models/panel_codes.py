@@ -20,6 +20,14 @@ CODE_LEN = 6
 RL_MAX_ATTEMPTS = 10
 RL_WINDOW_SEC = 600  # 10 минут
 
+# Глобальный circuit-breaker — если ВСЯ система получила >GLOBAL_MAX_FAILS
+# неудачных попыток за окно, временно блокируем любые проверки кода.
+# Защищает от ботнета с разных IP, обходящих per-IP лимит.
+GLOBAL_MAX_FAILS = 100
+GLOBAL_WINDOW_SEC = 600
+_GLOBAL_FAILS: collections.deque[float] = collections.deque()
+
+
 _FAILED_ATTEMPTS: dict[str, collections.deque[float]] = {}
 _RL_LOCK = threading.Lock()
 
@@ -55,6 +63,11 @@ def record_failure(ip: str) -> None:
         # Защита от ddos памятью: cap на размер очереди
         while len(dq) > RL_MAX_ATTEMPTS * 2:
             dq.popleft()
+        # Глобальный счётчик
+        _GLOBAL_FAILS.append(now)
+        cutoff = now - GLOBAL_WINDOW_SEC
+        while _GLOBAL_FAILS and _GLOBAL_FAILS[0] < cutoff:
+            _GLOBAL_FAILS.popleft()
 
 
 def cleanup_rate_limits() -> int:
@@ -128,3 +141,12 @@ def cleanup_old(days: int = 1) -> int:
             (cutoff,),
         )
         return cur.rowcount
+
+def is_globally_locked() -> bool:
+    """True если суммарно по всем IP >= GLOBAL_MAX_FAILS за окно."""
+    now = time.time()
+    cutoff = now - GLOBAL_WINDOW_SEC
+    with _RL_LOCK:
+        while _GLOBAL_FAILS and _GLOBAL_FAILS[0] < cutoff:
+            _GLOBAL_FAILS.popleft()
+        return len(_GLOBAL_FAILS) >= GLOBAL_MAX_FAILS

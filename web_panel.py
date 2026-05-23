@@ -52,16 +52,46 @@ from vkbot.schedule import loader as schedule_loader
 load_dotenv()
 
 app = Flask(__name__)
-app.secret_key = os.getenv("PANEL_SECRET", os.urandom(24).hex())
+import logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+
+from flask_wtf.csrf import CSRFProtect, CSRFError
+csrf = CSRFProtect(app)
+app.config["WTF_CSRF_TIME_LIMIT"] = None  # держим токен пока живёт сессия
+@app.errorhandler(CSRFError)
+def _csrf_error(e):
+    return ("CSRF token missing or invalid. Reload the page and try again.", 400)
+
+_panel_secret = os.getenv("PANEL_SECRET")
+if not _panel_secret:
+    raise SystemExit("FATAL: PANEL_SECRET env var is required (set 32+ random hex chars)")
+app.secret_key = _panel_secret
 
 # Persistent sessions: cookie живёт 30 дней, не сбрасывается при закрытии браузера
 import datetime as _dt
 
 app.config["PERMANENT_SESSION_LIFETIME"] = _dt.timedelta(days=365)
 app.config["SESSION_COOKIE_HTTPONLY"] = True
-app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
-# Secure-флаг включаем только если PANEL_BASE_URL = https://… — иначе локалка сломается
-app.config["SESSION_COOKIE_SECURE"] = os.getenv("PANEL_BASE_URL", "").startswith("https://")
+# SAMESITE=None требует Secure (иначе браузер молча дропнет cookie).
+# На локалке без https используем Lax (Mini App не заработает локально — ок).
+_secure_cookies = os.getenv("PANEL_BASE_URL", "").startswith("https://")
+app.config["SESSION_COOKIE_SECURE"] = _secure_cookies
+app.config["SESSION_COOKIE_SAMESITE"] = "None" if _secure_cookies else "Lax"
+
+@app.after_request
+def _security_headers(resp):
+    resp.headers.setdefault("Content-Security-Policy",
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.jsdelivr.net; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; "
+        "font-src 'self' https://fonts.gstatic.com; "
+        "img-src 'self' data: https:; "
+        "connect-src 'self';")
+    return resp
+
 
 @app.route("/robots.txt")
 def robots_txt():
@@ -80,7 +110,7 @@ def _set_remember_cookie(resp, token: str) -> None:
         _REMEMBER_COOKIE, token,
         max_age=_REMEMBER_TTL_S,
         httponly=True,
-        samesite="Lax",
+        samesite=app.config["SESSION_COOKIE_SAMESITE"],
         secure=app.config["SESSION_COOKIE_SECURE"],
         path="/",
     )
@@ -254,11 +284,16 @@ def _get_stats() -> dict:
     try:
         conn = _notes_conn()
         uids: set = set()
-        for tbl in ("notes", "reminders", "subscriptions", "deadlines", "user_prefs"):
+        # Явный whitelist — никакой подстановки имён таблиц в SQL.
+        for stmt in (
+            "SELECT DISTINCT user_id FROM notes",
+            "SELECT DISTINCT user_id FROM reminders",
+            "SELECT DISTINCT user_id FROM subscriptions",
+            "SELECT DISTINCT user_id FROM deadlines",
+            "SELECT DISTINCT user_id FROM user_prefs",
+        ):
             try:
-                for (uid,) in conn.execute(
-                    f"SELECT DISTINCT user_id FROM {tbl}"
-                ).fetchall():
+                for (uid,) in conn.execute(stmt).fetchall():
                     uids.add(uid)
             except Exception:
                 pass
@@ -390,6 +425,8 @@ _BASE_TPL = """
 <html lang="ru" data-theme="light" data-bs-theme="light">
 <head>
   <meta charset="utf-8">
+  <script src="https://unpkg.com/@vkontakte/vk-bridge/dist/browser.min.js"></script>
+  <script>try{if(window.vkBridge)vkBridge.send("VKWebAppInit").catch(function(){});}catch(e){}</script>
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#10B981">
   <meta name="robots" content="noindex, nofollow, noarchive">
@@ -721,9 +758,12 @@ _BASE_TPL = """
         content: ""; position: absolute; left: 0; top: 8px; bottom: 8px;
         width: 3px; border-radius: 0 3px 3px 0; background: var(--accent);
       }
-      .sb-user { justify-content: center; }
+      .sb-user { justify-content: center; padding: 4px; }
       .sb-user-info, .sb-logout-label { display: none; }
-      .sb-logout { width: 36px; padding: 0; }
+      .sb-user .role-pill { display: none; }
+      .sb-avatar { width: 36px; height: 36px; }
+      .sb-foot { padding: 8px; gap: 6px; }
+      .sb-logout { width: 36px; padding: 0; margin: 0 auto; }
       .topbar { padding: 0 22px; height: 56px; }
       .page { padding: 22px; }
       .topbar-crumbs { font-size: 12px; }
@@ -1107,6 +1147,8 @@ _LOGIN_TPL = """
 <html lang="ru" data-theme="light">
 <head>
   <meta charset="utf-8">
+  <script src="https://unpkg.com/@vkontakte/vk-bridge/dist/browser.min.js"></script>
+  <script>try{if(window.vkBridge)vkBridge.send("VKWebAppInit").catch(function(){});}catch(e){}</script>
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#10B981">
   <meta name="robots" content="noindex, nofollow, noarchive">
@@ -1255,6 +1297,7 @@ _LOGIN_TPL = """
     </div>
 
     <form method="post" action="{{ url_for('login_code') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <label class="label" for="code">Код из бота</label>
       <input id="code" type="text" name="code" class="code-input"
              placeholder="······" maxlength="6" minlength="6"
@@ -1373,6 +1416,7 @@ _DASHBOARD_CONTENT = """
   {% if pref %}
     <form method="post" action="{{ url_for('me_unsubscribe') }}" style="margin:0;"
           onsubmit="return confirm('Отключить подписку? Сможешь подключить обратно в любой момент.');">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button class="btn btn-outline-secondary btn-sm" style="color:#DC2626;border-color:color-mix(in srgb,#DC2626 30%, var(--border));">✕ Отключить</button>
     </form>
   {% endif %}
@@ -1380,6 +1424,7 @@ _DASHBOARD_CONTENT = """
 
 <form id="subscribeForm" method="post" action="{{ url_for('me_subscribe') }}"
       class="card mb-4" style="padding:18px;display:none;flex-wrap:wrap;gap:12px;align-items:end;">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   <div style="flex:1;min-width:140px;">
     <label class="form-label" style="font-size:11px;margin-bottom:4px;">Курс</label>
     <select name="course" id="subCourse" class="form-select form-select-sm" required>
@@ -1712,6 +1757,7 @@ _UPLOAD_CONTENT = """
     {% endif %}
 
     <form method="post" action="{{ url_for('upload_commit') }}" class="mt-3">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <input type="hidden" name="token" value="{{ pending_token }}">
       <div class="form-check mb-3">
         <input type="checkbox" class="form-check-input" id="notify_check"
@@ -1728,6 +1774,7 @@ _UPLOAD_CONTENT = """
     </form>
     <form id="cancel-form" method="post" action="{{ url_for('upload_cancel') }}"
           class="d-none">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <input type="hidden" name="token" value="{{ pending_token }}">
     </form>
   </div>
@@ -1740,6 +1787,7 @@ _UPLOAD_CONTENT = """
       ничего не запишется, пока не подтвердишь.
     </p>
     <form method="post" enctype="multipart/form-data" id="upload-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <label class="dropzone d-block mb-3" id="dropzone">
         <div class="icon">📂</div>
         <div class="mt-2" id="drop-text">
@@ -1813,6 +1861,7 @@ _UPLOAD_CONTENT = """
             {% if not loop.first %}
             <form method="post" action="{{ url_for('upload_rollback', version_id=v.id) }}"
                   onsubmit="return confirm('Откатить расписание к версии #{{ v.id }}?')">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               <button class="btn btn-sm btn-outline-warning">↩ Откат</button>
             </form>
             {% endif %}
@@ -2113,6 +2162,7 @@ _ME_CONTENT = """
 {% macro del_btn(kind, id, label='Удалить') %}
   <form method="post" action="{{ url_for('me_delete') }}" class="d-inline"
         onsubmit="return confirm('{{ label }}?');">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <input type="hidden" name="kind" value="{{ kind }}">
     <input type="hidden" name="id" value="{{ id }}">
     <button class="btn btn-sm btn-link text-danger p-0" style="font-size:18px;line-height:1;"
@@ -2252,6 +2302,7 @@ _ME_CONTENT = """
                 {{ row[1] }} курс — {{ row[2] }}
                 <form method="post" action="{{ url_for('me_delete') }}" class="d-inline m-0"
                       onsubmit="return confirm('Отписаться от {{ row[1] }} курс — {{ row[2] }}?');">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                   <input type="hidden" name="kind" value="subscription">
                   <input type="hidden" name="id" value="{{ row[0] }}">
                   <button class="btn btn-sm p-0 border-0"
@@ -2320,14 +2371,19 @@ def login_code():
     """
     code = (request.form.get("code") or "").strip()
     ip = _client_ip()
-    if panel_codes.is_rate_limited(ip):
-        audit.log(None, "auth.rate_limited", ip, "")
-        return redirect(url_for(
-            "login",
-            error="Слишком много неудачных попыток. Подожди 10 минут.",
-        ))
+    # Сначала пробуем валидировать код — валидный код ВСЕГДА пускает,
+    # даже при global/per-IP lock. Иначе ботнет может надолго забанить
+    # реального админа, заполнив счётчик неудач.
     uid = panel_codes.verify(code)
     if not uid:
+        # Только теперь проверяем лимиты, чтобы не подсказывать злоумышленнику,
+        # что код был правильным до бана.
+        if panel_codes.is_globally_locked():
+            audit.log(None, "auth.global_lock", ip, "")
+            return redirect(url_for("login", error="Система временно заблокирована. Подожди 10 минут."))
+        if panel_codes.is_rate_limited(ip):
+            audit.log(None, "auth.rate_limited", ip, "")
+            return redirect(url_for("login", error="Слишком много неудачных попыток. Подожди 10 минут."))
         panel_codes.record_failure(ip)
         return redirect(url_for("login", error="Неверный или истёкший код."))
     seen_users.touch(uid)
@@ -2596,6 +2652,47 @@ _BROADCAST_TEXT = (
 )
 
 
+
+# Excel upload validation: ext + magic bytes (защита от подмены .xlsx произвольным файлом).
+_XLSX_MAGIC = bytes.fromhex("504b0304")          # zip-контейнер (xlsx/xlsm)
+_XLS_MAGIC  = bytes.fromhex("d0cf11e0")  # OLE2-контейнер (старый xls)
+_ALLOWED_EXTS = {".xlsx", ".xls", ".xlsm"}
+
+def _validate_excel_upload(f) -> str:
+    """Возвращает '' если ок, иначе текст ошибки. Проверяет:
+    1) расширение в whitelist; 2) magic bytes; 3) для xlsx — наличие
+    [Content_Types].xml внутри zip (отсекает произвольные zip-payload'ы)."""
+    if not f or not f.filename:
+        return "Файл не выбран."
+    ext = os.path.splitext(f.filename)[1].lower()
+    if ext not in _ALLOWED_EXTS:
+        return f"Неподдерживаемое расширение {ext or '?'}. Нужен .xlsx/.xls."
+    head = f.stream.read(8)
+    f.stream.seek(0)
+    if head.startswith(_XLS_MAGIC):
+        return ""  # старый OLE2 формат, magic совпал — ок
+    if not head.startswith(_XLSX_MAGIC):
+        return "Файл не похож на Excel (неверный заголовок)."
+    # Для zip-формата проверяем, что это реально Office Open XML, а не
+    # произвольный zip-архив с .xlsx-расширением.
+    import zipfile, io
+    try:
+        data = f.stream.read()
+        f.stream.seek(0)
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            names = set(z.namelist())
+            if "[Content_Types].xml" not in names:
+                return "Файл — zip-архив, но не Excel (нет [Content_Types].xml)."
+            # Поверхностный sanity-check на размер — отсекает zip-bombs
+            if any(zi.file_size > 50_000_000 for zi in z.infolist()):
+                return "Подозрительно крупная запись внутри архива."
+    except zipfile.BadZipFile:
+        return "Файл не является валидным zip/xlsx."
+    except Exception:
+        return "Не удалось проверить структуру файла."
+    return ""
+
+
 @app.route("/upload", methods=["GET", "POST"])
 @admin_required
 def upload_page():
@@ -2605,8 +2702,10 @@ def upload_page():
     pending_token = None
     if request.method == "POST":
         f = request.files.get("excel_file")
-        if not f or not f.filename:
-            error = "Файл не выбран."
+        v_err = _validate_excel_upload(f)
+        if v_err:
+            error = v_err
+            f = None
         else:
             suffix = os.path.splitext(f.filename)[1] or ".xlsx"
             try:
@@ -2617,7 +2716,8 @@ def upload_page():
                 pending_token = secrets.token_urlsafe(16)
                 _add_pending(pending_token, tmp_path, f.filename)
             except Exception:
-                error = traceback.format_exc()
+                import logging; logging.exception("upload preview failed")
+                error = "Не удалось обработать файл (см. логи сервиса)."
     return _render_page(
         "Загрузить расписание",
         _UPLOAD_CONTENT,
@@ -2764,6 +2864,7 @@ def _check_api_token() -> bool:
 
 
 @app.route("/api/schedule/upload", methods=["POST"])
+@csrf.exempt
 def api_schedule_upload():
     """Загрузить Excel, получить превью (но НЕ применять).
 
@@ -2774,8 +2875,9 @@ def api_schedule_upload():
     if not _check_api_token():
         return jsonify({"error": "unauthorized"}), 401
     f = request.files.get("file") or request.files.get("excel_file")
-    if not f or not f.filename:
-        return jsonify({"error": "file required"}), 400
+    v_err = _validate_excel_upload(f)
+    if v_err:
+        return jsonify({"error": v_err}), 400
     suffix = os.path.splitext(f.filename)[1] or ".xlsx"
     try:
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
@@ -2786,10 +2888,12 @@ def api_schedule_upload():
         _add_pending(token, tmp_path, f.filename)
         return jsonify({"token": token, "preview": pv.__dict__})
     except Exception as e:
-        return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
+        import logging; logging.exception("api upload failed")
+        return jsonify({"error": "internal error"}), 500
 
 
 @app.route("/api/schedule/commit", methods=["POST"])
+@csrf.exempt
 def api_schedule_commit():
     if not _check_api_token():
         return jsonify({"error": "unauthorized"}), 401
@@ -2821,6 +2925,7 @@ def api_schedule_versions():
 
 
 @app.route("/api/schedule/rollback/<int:version_id>", methods=["POST"])
+@csrf.exempt
 def api_schedule_rollback(version_id: int):
     if not _check_api_token():
         return jsonify({"error": "unauthorized"}), 401
@@ -3191,6 +3296,7 @@ _USERS_CONTENT = """
               {% if u.role == 'user' %}
                 <form method="post" action="{{ url_for('admin_grant') }}" class="d-inline"
                       onsubmit="return confirm('Дать админа {{ u.name }} (id{{ u.vk_id }})?');">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                   <input type="hidden" name="vk_id" value="{{ u.vk_id }}">
                   <input type="hidden" name="name" value="{{ u.name }}">
                   <input type="hidden" name="next" value="{{ self_url }}">
@@ -3199,6 +3305,7 @@ _USERS_CONTENT = """
               {% elif u.role == 'admin' %}
                 <form method="post" action="{{ url_for('admin_revoke') }}" class="d-inline"
                       onsubmit="return confirm('Убрать админа у {{ u.name }}?');">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                   <input type="hidden" name="vk_id" value="{{ u.vk_id }}">
                   <input type="hidden" name="next" value="{{ self_url }}">
                   <button class="btn btn-sm btn-outline-secondary" style="color:#DC2626;border-color:color-mix(in srgb,#DC2626 30%, var(--border));">✖ Убрать</button>
@@ -3250,6 +3357,7 @@ _ADMINS_CONTENT = """
   <div class="card-header fw-semibold">Выдать права админа</div>
   <div class="card-body">
     <form method="post" action="{{ url_for('admin_grant') }}" class="row g-2 align-items-center">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="col-sm-8 col-md-6">
         <input type="text" name="query" class="form-control" required autocomplete="off"
                list="grantUsers"
@@ -3313,6 +3421,7 @@ _ADMINS_CONTENT = """
             <td class="text-end">
               <form method="post" action="{{ url_for('admin_revoke') }}" class="d-inline"
                     onsubmit="return confirm('Убрать админа у {{ a.name or a.vk_id }}?');">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <input type="hidden" name="vk_id" value="{{ a.vk_id }}">
                 <button class="btn btn-sm btn-outline-warning">✖ Убрать</button>
               </form>
@@ -4209,6 +4318,7 @@ _BROADCAST_CONTENT = """
 <form method="post" action="{{ url_for('broadcast_send') }}" class="card mb-4"
       style="padding:18px;display:flex;flex-direction:column;gap:14px;"
       onsubmit="return confirm('Отправить сообщение {{ subscriber_count }} подписчикам?');">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   <div>
     <label class="form-label">Текст сообщения</label>
     <textarea name="text" rows="8" class="form-control" required minlength="3" maxlength="4096"
