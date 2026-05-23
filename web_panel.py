@@ -344,17 +344,23 @@ def _get_stats() -> dict:
 
 def _get_user_data(uid: int) -> dict:
     data: dict = {
-        "notes": [], "reminders": [], "deadlines": [], "subscriptions": [], "pref": None,
+        "notes": [], "reminders": [], "reminders_past": [],
+        "deadlines": [], "subscriptions": [], "pref": None,
     }
     try:
         conn = _notes_conn()
         data["notes"] = conn.execute(
-            "SELECT id, text, created_at FROM notes WHERE user_id=? ORDER BY id DESC",
+            "SELECT id, note_text, timestamp FROM notes WHERE user_id=? ORDER BY id DESC",
             (uid,),
         ).fetchall()
         data["reminders"] = conn.execute(
             "SELECT id, reminder_text, remind_at FROM reminders "
             "WHERE user_id=? AND notified=0 ORDER BY remind_at",
+            (uid,),
+        ).fetchall()
+        data["reminders_past"] = conn.execute(
+            "SELECT id, reminder_text, remind_at FROM reminders "
+            "WHERE user_id=? AND notified=1 ORDER BY remind_at DESC LIMIT 10",
             (uid,),
         ).fetchall()
         data["deadlines"] = conn.execute(
@@ -363,7 +369,8 @@ def _get_user_data(uid: int) -> dict:
             (uid,),
         ).fetchall()
         data["subscriptions"] = conn.execute(
-            "SELECT id, course, direction FROM subscriptions WHERE user_id=?",
+            "SELECT id, course, direction FROM subscriptions "
+            "WHERE user_id=? AND COALESCE(disabled,0)=0",
             (uid,),
         ).fetchall()
         data["pref"] = conn.execute(
@@ -1628,6 +1635,23 @@ _UPLOAD_CONTENT = """
   {% endif %}
   <br>Бот подхватит изменения в течение минуты (hot-reload).
 </div>
+{% if conflicts_count and conflicts_count > 0 %}
+<div class="alert alert-warning d-flex align-items-center gap-3">
+  <span style="font-size:24px;">⚠️</span>
+  <div class="flex-grow-1">
+    <strong>Найдено конфликтов: {{ conflicts_count }}</strong>
+    <div class="small text-muted">
+      {% if conflict_teachers %}Двойное бронирование преподавателей: {{ conflict_teachers }}.{% endif %}
+      {% if conflict_rooms %} Двойное бронирование аудиторий: {{ conflict_rooms }}.{% endif %}
+    </div>
+  </div>
+  <a href="{{ url_for('conflicts_page') }}" class="btn btn-sm btn-outline-warning">
+    Посмотреть →
+  </a>
+</div>
+{% elif commit_result %}
+<div class="alert alert-info py-2 small">✅ Конфликтов не найдено — расписание чистое.</div>
+{% endif %}
 {% endif %}
 
 {% if error %}
@@ -2086,6 +2110,16 @@ _SCHEDULE_CONTENT = """
 """
 
 _ME_CONTENT = """
+{% macro del_btn(kind, id, label='Удалить') %}
+  <form method="post" action="{{ url_for('me_delete') }}" class="d-inline"
+        onsubmit="return confirm('{{ label }}?');">
+    <input type="hidden" name="kind" value="{{ kind }}">
+    <input type="hidden" name="id" value="{{ id }}">
+    <button class="btn btn-sm btn-link text-danger p-0" style="font-size:18px;line-height:1;"
+            title="{{ label }}">✕</button>
+  </form>
+{% endmacro %}
+
 <div class="d-flex align-items-center mb-4 gap-3">
   <div>
     <h3 class="mb-0">👤 Мой профиль</h3>
@@ -2113,9 +2147,12 @@ _ME_CONTENT = """
         {% if notes %}
           <ul class="list-group list-group-flush">
             {% for row in notes %}
-            <li class="list-group-item">
-              <div class="text-muted small mb-1">{{ row[2] }}</div>
-              <div style="white-space:pre-wrap">{{ row[1] }}</div>
+            <li class="list-group-item d-flex justify-content-between gap-3">
+              <div class="flex-grow-1">
+                <div class="text-muted small mb-1">{{ row[2] }}</div>
+                <div style="white-space:pre-wrap">{{ row[1] }}</div>
+              </div>
+              <div>{{ del_btn('note', row[0], 'Удалить заметку') }}</div>
             </li>
             {% endfor %}
           </ul>
@@ -2126,7 +2163,7 @@ _ME_CONTENT = """
     </div>
   </div>
 
-  {# Напоминания #}
+  {# Активные напоминания #}
   <div class="col-md-6">
     <div class="card h-100">
       <div class="card-header fw-semibold">⏰ Активные напоминания
@@ -2136,9 +2173,12 @@ _ME_CONTENT = """
         {% if reminders %}
           <ul class="list-group list-group-flush">
             {% for row in reminders %}
-            <li class="list-group-item">
-              <strong>{{ row[1] }}</strong>
-              <div class="text-muted small">📅 {{ row[2] }}</div>
+            <li class="list-group-item d-flex justify-content-between gap-3">
+              <div class="flex-grow-1">
+                <strong>{{ row[1] }}</strong>
+                <div class="text-muted small">📅 {{ row[2] }}</div>
+              </div>
+              <div>{{ del_btn('reminder', row[0], 'Удалить напоминание') }}</div>
             </li>
             {% endfor %}
           </ul>
@@ -2146,6 +2186,28 @@ _ME_CONTENT = """
           <p class="text-muted mb-0 p-3">Нет активных напоминаний.</p>
         {% endif %}
       </div>
+
+      {# История сработавших — свёрнутая #}
+      {% if reminders_past %}
+      <div class="card-footer p-0" style="background:transparent;border-top:1px solid var(--border);">
+        <details>
+          <summary style="padding:10px 14px;cursor:pointer;font-size:13px;color:var(--text-3);">
+            История сработавших ({{ reminders_past|length }})
+          </summary>
+          <ul class="list-group list-group-flush" style="border-top:1px solid var(--border);">
+            {% for row in reminders_past %}
+            <li class="list-group-item d-flex justify-content-between gap-3" style="opacity:.7;">
+              <div class="flex-grow-1">
+                <span style="text-decoration:line-through;">{{ row[1] }}</span>
+                <div class="text-muted small">📅 {{ row[2] }}</div>
+              </div>
+              <div>{{ del_btn('reminder', row[0], 'Удалить из истории') }}</div>
+            </li>
+            {% endfor %}
+          </ul>
+        </details>
+      </div>
+      {% endif %}
     </div>
   </div>
 
@@ -2159,10 +2221,13 @@ _ME_CONTENT = """
         {% if deadlines %}
           <ul class="list-group list-group-flush">
             {% for row in deadlines %}
-            <li class="list-group-item">
-              <strong>{{ row[1] }}</strong>
-              {% if row[2] %}<span class="text-muted"> — {{ row[2] }}</span>{% endif %}
-              <div class="text-muted small">📅 {{ row[3] }}</div>
+            <li class="list-group-item d-flex justify-content-between gap-3">
+              <div class="flex-grow-1">
+                <strong>{{ row[1] }}</strong>
+                {% if row[2] %}<span class="text-muted"> — {{ row[2] }}</span>{% endif %}
+                <div class="text-muted small">📅 {{ row[3] }}</div>
+              </div>
+              <div>{{ del_btn('deadline', row[0], 'Удалить дедлайн') }}</div>
             </li>
             {% endfor %}
           </ul>
@@ -2183,8 +2248,16 @@ _ME_CONTENT = """
         {% if subscriptions %}
           <div class="d-flex flex-wrap gap-2">
             {% for row in subscriptions %}
-              <span class="badge bg-primary fs-6 fw-normal py-2 px-3">
+              <span class="badge bg-primary fs-6 fw-normal py-2 px-3 d-inline-flex align-items-center gap-2">
                 {{ row[1] }} курс — {{ row[2] }}
+                <form method="post" action="{{ url_for('me_delete') }}" class="d-inline m-0"
+                      onsubmit="return confirm('Отписаться от {{ row[1] }} курс — {{ row[2] }}?');">
+                  <input type="hidden" name="kind" value="subscription">
+                  <input type="hidden" name="id" value="{{ row[0] }}">
+                  <button class="btn btn-sm p-0 border-0"
+                          style="background:transparent;color:white;opacity:.7;font-size:14px;line-height:1;"
+                          title="Отписаться">✕</button>
+                </form>
               </span>
             {% endfor %}
           </div>
@@ -2568,6 +2641,7 @@ def upload_commit():
     who = f"admin:{_current_vk_id() or 'password'}"
     try:
         result = schedule_loader.commit(excel_path, who, original)
+        _ics_cache_clear()
         audit.log(
             _current_vk_id(), "schedule.upload",
             original or "—",
@@ -2599,6 +2673,8 @@ def upload_commit():
         )
     finally:
         _drop_pending(token)
+    # Подсчёт конфликтов в свежезалитом расписании — показываем сразу на странице
+    conflicts = _find_conflicts()
     return _render_page(
         "Загрузить расписание",
         _UPLOAD_CONTENT,
@@ -2606,6 +2682,9 @@ def upload_commit():
         error=None,
         pending_token=None,
         commit_result=result,
+        conflicts_count=len(conflicts["teachers"]) + len(conflicts["rooms"]),
+        conflict_teachers=len(conflicts["teachers"]),
+        conflict_rooms=len(conflicts["rooms"]),
         versions=schedule_loader.list_versions()[:10],
         subscriber_count=_subscriber_count(),
     )
@@ -2658,6 +2737,7 @@ def upload_cancel():
 def upload_rollback(version_id: int):
     try:
         schedule_loader.rollback(version_id, uploaded_by=f"admin:{_current_vk_id() or 'password'}")
+        _ics_cache_clear()
     except Exception:
         return _render_page(
             "Загрузить расписание",
@@ -2720,6 +2800,7 @@ def api_schedule_commit():
     excel_path, original, _ts = item
     try:
         result = schedule_loader.commit(excel_path, "api", original)
+        _ics_cache_clear()
         try:
             from import_excel import import_schedule
             import_schedule(excel_path, SCHEDULE_DB_S)
@@ -2744,7 +2825,9 @@ def api_schedule_rollback(version_id: int):
     if not _check_api_token():
         return jsonify({"error": "unauthorized"}), 401
     try:
-        return jsonify(schedule_loader.rollback(version_id, uploaded_by="api"))
+        result = schedule_loader.rollback(version_id, uploaded_by="api")
+        _ics_cache_clear()
+        return jsonify(result)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -2913,10 +2996,45 @@ def me_page():
         vk_id=vk_id,
         notes=data.get("notes", []),
         reminders=data.get("reminders", []),
+        reminders_past=data.get("reminders_past", []),
         deadlines=data.get("deadlines", []),
         subscriptions=data.get("subscriptions", []),
         pref=data.get("pref"),
     )
+
+
+_ME_DELETABLE_TABLES = {
+    "note": "notes",
+    "reminder": "reminders",
+    "deadline": "deadlines",
+    "subscription": "subscriptions",
+}
+
+
+@app.route("/me/delete", methods=["POST"])
+@login_required
+def me_delete():
+    """Удаляет одну запись пользователя. Проверка владельца обязательна."""
+    uid = _current_vk_id()
+    kind = (request.form.get("kind") or "").strip()
+    try:
+        item_id = int(request.form.get("id") or 0)
+    except (TypeError, ValueError):
+        item_id = 0
+    table = _ME_DELETABLE_TABLES.get(kind)
+    if not uid or not item_id or not table:
+        return redirect(url_for("me_page"))
+    try:
+        with _notes_conn() as conn:
+            cur = conn.execute(
+                f"DELETE FROM {table} WHERE id=? AND user_id=?",
+                (item_id, uid),
+            )
+            conn.commit()
+            audit.log(uid, f"me.delete_{kind}", f"id={item_id}", f"rows={cur.rowcount}")
+    except Exception:
+        pass
+    return redirect(url_for("me_page"))
 
 
 # ── Пользователи бота: агрегация и страницы ───────────────────────────────────
@@ -3854,6 +3972,18 @@ def _build_ics(pairs: list, *, weeks_ahead: int = 8, calendar_name: str = "Ра�
     return "\r\n".join(lines) + "\r\n"
 
 
+# ── Кэш для /calendar.ics ────────────────────────────────────────────────────
+# Календарные клиенты (Google/Apple) дёргают .ics каждые 1-3 часа. Без кэша
+# каждый запрос = SQL + цикл по 8 неделям × все пары. Инвалидируется при
+# успешном commit нового расписания (см. upload_commit).
+_ICS_CACHE: dict[tuple, tuple[str, str, float]] = {}  # key → (ics, cal_name, ts)
+_ICS_TTL_SEC = 3600
+
+
+def _ics_cache_clear() -> None:
+    _ICS_CACHE.clear()
+
+
 @app.route("/calendar.ics")
 @login_required
 def calendar_ics():
@@ -3863,38 +3993,47 @@ def calendar_ics():
       https://elschedule.ru/calendar.ics
     но т.к. это требует auth, нужны параметры. Делаем download через cookies.
     """
+    import time as _time
     uid = _current_vk_id()
     pref = _get_pref(uid) if uid else None
-    # Если без подписки — отдаём пустой календарь с пояснением в названии
-    pairs = []
-    cal_name = "ЧГПУ · Расписание"
-    try:
-        with _sched_conn(vk=True) as conn:
-            if pref:
-                cal_name = f"ЧГПУ · {pref[0]} курс · {pref[1]}"
-                pairs = conn.execute(
-                    "SELECT course, direction, day, time, subject, teacher, room, "
-                    "week, class_type, date_range FROM schedule "
-                    "WHERE course=? AND direction=? "
-                    "ORDER BY day, time",
-                    (pref[0], pref[1]),
-                ).fetchall()
-            else:
-                pairs = conn.execute(
-                    "SELECT course, direction, day, time, subject, teacher, room, "
-                    "week, class_type, date_range FROM schedule "
-                    "ORDER BY course, direction, day, time"
-                ).fetchall()
-    except Exception:
-        pass
-    ics = _build_ics(list(pairs), weeks_ahead=8, calendar_name=cal_name)
+    key = (pref[0], pref[1]) if pref else ("ALL", "")
+
+    hit = _ICS_CACHE.get(key)
+    if hit and _time.time() - hit[2] < _ICS_TTL_SEC:
+        ics, cal_name, _ = hit
+    else:
+        pairs = []
+        cal_name = "ЧГПУ · Расписание"
+        try:
+            with _sched_conn(vk=True) as conn:
+                if pref:
+                    cal_name = f"ЧГПУ · {pref[0]} курс · {pref[1]}"
+                    pairs = conn.execute(
+                        "SELECT course, direction, day, time, subject, teacher, room, "
+                        "week, class_type, date_range FROM schedule "
+                        "WHERE course=? AND direction=? "
+                        "ORDER BY day, time",
+                        (pref[0], pref[1]),
+                    ).fetchall()
+                else:
+                    pairs = conn.execute(
+                        "SELECT course, direction, day, time, subject, teacher, room, "
+                        "week, class_type, date_range FROM schedule "
+                        "ORDER BY course, direction, day, time"
+                    ).fetchall()
+        except Exception:
+            pass
+        ics = _build_ics(list(pairs), weeks_ahead=8, calendar_name=cal_name)
+        _ICS_CACHE[key] = (ics, cal_name, _time.time())
+
     filename = "elschedule.ics"
     return (
         ics, 200,
         {
             "Content-Type": "text/calendar; charset=utf-8",
             "Content-Disposition": f'attachment; filename="{filename}"',
-            "Cache-Control": "no-cache",
+            # Календарным клиентам разрешаем кэшировать 1 час; браузеру — нет.
+            "Cache-Control": "private, max-age=3600",
         },
     )
 
@@ -3904,8 +4043,48 @@ def calendar_ics():
 _AUDIT_CONTENT = """
 <div class="page-title">
   <h2>📜 Аудит-лог</h2>
-  <div style="color:var(--text-3);font-size:12.5px;">Последние {{ rows|length }} событий</div>
+  <div style="color:var(--text-3);font-size:12.5px;">Найдено {{ rows|length }} событий{% if any_filter %} (с фильтрами){% endif %}</div>
 </div>
+
+<form method="get" class="card mb-3" style="padding:14px 18px;display:flex;gap:10px;align-items:end;flex-wrap:wrap;">
+  <div>
+    <label class="form-label" style="font-size:11px;margin-bottom:3px;">Группа действий</label>
+    <select name="action" class="form-select form-select-sm" style="min-width:160px;">
+      <option value="">— все —</option>
+      {% for p in action_prefixes %}
+        <option value="{{ p }}" {% if p == action_filter %}selected{% endif %}>{{ p }}.*</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div>
+    <label class="form-label" style="font-size:11px;margin-bottom:3px;">Actor</label>
+    <select name="actor" class="form-select form-select-sm" style="min-width:200px;">
+      <option value="">— все —</option>
+      {% for uid in actor_ids %}
+        <option value="{{ uid }}" {% if uid == actor_filter %}selected{% endif %}>
+          {{ names.get(uid, 'id' ~ uid) }} (id{{ uid }})
+        </option>
+      {% endfor %}
+    </select>
+  </div>
+  <div>
+    <label class="form-label" style="font-size:11px;margin-bottom:3px;">С даты</label>
+    <input type="date" name="since" value="{{ since_filter }}"
+           class="form-control form-control-sm" style="min-width:160px;">
+  </div>
+  <div>
+    <label class="form-label" style="font-size:11px;margin-bottom:3px;">Лимит</label>
+    <select name="limit" class="form-select form-select-sm">
+      {% for n in [100, 300, 1000, 5000] %}
+        <option value="{{ n }}" {% if n == limit_value %}selected{% endif %}>{{ n }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <button class="btn btn-primary btn-sm" style="height:31px;">Применить</button>
+  {% if any_filter %}
+    <a href="{{ url_for('audit_page') }}" class="btn btn-outline-secondary btn-sm" style="height:31px;">Сбросить</a>
+  {% endif %}
+</form>
 
 <div class="card">
   <div class="table-responsive">
@@ -3968,12 +4147,38 @@ def _action_color(action: str) -> str:
 @app.route("/admin/audit")
 @owner_required
 def audit_page():
-    rows = audit.list_recent(limit=300)
-    actor_ids = {r["actor_vk_id"] for r in rows if r["actor_vk_id"]}
-    names = vk_names.resolve(actor_ids)
+    action_filter = (request.args.get("action") or "").strip()
+    try:
+        actor_filter = int(request.args.get("actor") or 0)
+    except (TypeError, ValueError):
+        actor_filter = 0
+    since_filter = (request.args.get("since") or "").strip()
+    try:
+        limit_value = int(request.args.get("limit") or 300)
+    except (TypeError, ValueError):
+        limit_value = 300
+    # Clamp лимит чтобы не словить OOM на огромном логе
+    limit_value = max(10, min(limit_value, 10000))
+
+    rows = audit.list_recent(
+        limit=limit_value,
+        action_prefix=(action_filter + ".") if action_filter else "",
+        actor_vk_id=actor_filter if actor_filter > 0 else None,
+        since=since_filter,
+    )
+    # Имена нужны и для строк лога, и для селектора Actor
+    all_actor_ids = sorted(set(audit.distinct_actors()) | OWNER_VK_IDS)
+    names = vk_names.resolve(set(all_actor_ids) | {r["actor_vk_id"] for r in rows if r["actor_vk_id"]})
     return _render_page(
         "Аудит-лог", _AUDIT_CONTENT,
         rows=rows, names=names, action_color=_action_color,
+        action_prefixes=audit.distinct_action_prefixes(),
+        actor_ids=all_actor_ids,
+        action_filter=action_filter,
+        actor_filter=actor_filter,
+        since_filter=since_filter,
+        limit_value=limit_value,
+        any_filter=bool(action_filter or actor_filter or since_filter),
     )
 
 
