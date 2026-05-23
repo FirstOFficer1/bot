@@ -81,6 +81,67 @@ user_states = {}
 #                             БАЗА ДАННЫХ ДЛЯ РАСПИСАНИЯ
 # ----------------------------------------------------------------------------------
 
+_PHRASE_ABBREVS: list[tuple[str, str]] = sorted([
+    ("информационные системы и технологии", "ИСТ"),
+    ("прикладная математика и информатика", "ПМИ"),
+    ("математика и компьютерные науки", "МКН"),
+    ("государственное и муниципальное управление", "ГМУ"),
+    ("управление в технических системах", "УТС"),
+    ("экономическая безопасность", "Экон. безоп."),
+    ("информационная безопасность", "ИБ"),
+    ("информационные технологии", "ИТ"),
+    ("прикладная математика", "Прикл. матем."),
+    ("прикладная информатика", "Прикл. инф."),
+    ("программная инженерия", "Прогр. инж."),
+    ("автоматизация и управление", "Автом. и упр."),
+    ("техническая эксплуатация", "Тех. экспл."),
+    ("мехатроника и робототехника", "Мехатроника"),
+    ("экономика и управление", "Экон. и упр."),
+    ("бизнес-информатика", "Бизнес-инф."),
+    ("финансы и кредит", "Финансы и кр."),
+    ("физическая культура", "Физ. культура"),
+    ("педагогическое образование", "Пед. образ."),
+    ("бухгалтерский учёт", "Бух. учёт"),
+    ("бухгалтерский учет", "Бух. учёт"),
+], key=lambda x: -len(x[0]))
+
+_WORD_ABBREVS: dict[str, str] = {
+    "информационный": "инф.", "информационная": "инф.",
+    "информационных": "инф.", "информационные": "инф.",
+    "технологический": "техн.", "технологическая": "техн.",
+    "технологии": "техн.", "технология": "техн.",
+    "управление": "упр.", "управления": "упр.",
+    "экономический": "экон.", "экономическая": "экон.", "экономика": "экон.",
+    "математический": "матем.", "математика": "матем.",
+    "инженерный": "инж.", "инженерия": "инж.",
+    "программный": "прогр.", "программирование": "прогр.",
+    "системы": "сист.", "система": "сист.", "систем": "сист.",
+    "электроника": "электр.", "электронный": "электр.",
+    "безопасность": "безоп.", "безопасности": "безоп.",
+    "строительство": "строит.", "строительства": "строит.",
+    "производство": "произв.", "производства": "произв.",
+}
+
+
+def shorten_direction(name: str, max_len: int = 40) -> str:
+    """Сокращает название направления до max_len символов с помощью аббревиатур."""
+    if len(name) <= max_len:
+        return name
+    result = name
+    for phrase, abbr in _PHRASE_ABBREVS:
+        result = re.sub(re.escape(phrase), abbr, result, flags=re.IGNORECASE)
+        if len(result) <= max_len:
+            return result
+    words = result.split()
+    result = " ".join(_WORD_ABBREVS.get(w.lower(), w) for w in words)
+    if len(result) <= max_len:
+        return result
+    return result[:max_len - 1] + "…"
+
+
+_dir_label_to_full: dict[int, dict[str, str]] = {}
+
+
 def load_directions_from_db():
     """
     Загружает (course, direction) из s.db.
@@ -92,47 +153,87 @@ def load_directions_from_db():
         CREATE TABLE IF NOT EXISTS schedule (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             course INTEGER, direction TEXT, day TEXT,
-            time TEXT, subject TEXT, teacher TEXT, room TEXT
+            time TEXT, subject TEXT, teacher TEXT, room TEXT,
+            week TEXT DEFAULT '',
+            class_type TEXT DEFAULT '',
+            date_range TEXT DEFAULT ''
         )
     """)
+    existing_cols = {row[1] for row in cursor.execute("PRAGMA table_info(schedule)").fetchall()}
+    if "week" not in existing_cols:
+        cursor.execute("ALTER TABLE schedule ADD COLUMN week TEXT DEFAULT ''")
+    if "class_type" not in existing_cols:
+        cursor.execute("ALTER TABLE schedule ADD COLUMN class_type TEXT DEFAULT ''")
+    if "date_range" not in existing_cols:
+        cursor.execute("ALTER TABLE schedule ADD COLUMN date_range TEXT DEFAULT ''")
     conn.commit()
     cursor.execute("SELECT DISTINCT course, direction FROM schedule ORDER BY course;")
     directions_from_db = cursor.fetchall()
     conn.close()
-    
+
     directions_by_course = {}
     for course, direction in directions_from_db:
-        # Очищаем название направления (убираем 'курс', пробелы и т.п.)
         cleaned_direction = re.sub(r",?\s*\d+\s*курс.*", "", direction).strip()
         if course not in directions_by_course:
             directions_by_course[course] = []
         if cleaned_direction not in directions_by_course[course]:
             directions_by_course[course].append(cleaned_direction)
+
+    global _dir_label_to_full
+    _dir_label_to_full = {}
+    for course, dirs in directions_by_course.items():
+        mapping: dict[str, str] = {}
+        used_labels: set[str] = set()
+        for d in dirs:
+            label = shorten_direction(d)
+            if label in used_labels:
+                label = d[:40]
+            used_labels.add(label)
+            mapping[label] = d
+        _dir_label_to_full[course] = mapping
+
     return directions_by_course
+
 
 directions_by_course = load_directions_from_db()
 
+
+def direction_keyboard_for(course: int) -> ReplyKeyboardMarkup:
+    """Клавиатура с сокращёнными названиями направлений."""
+    buttons = [[KeyboardButton(text=label)] for label in _dir_label_to_full.get(course, {})]
+    buttons.append([KeyboardButton(text="Назад")])
+    return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
+
+
+def resolve_direction_label(text: str, course: int) -> str | None:
+    """Возвращает полное название направления по метке кнопки."""
+    return _dir_label_to_full.get(course, {}).get(text)
+
 def get_schedule_by_course(course: int, direction: str, day: str) -> str:
+    week_type = "нечет" if now_msk().isocalendar()[1] % 2 == 0 else "чёт"
     conn = sqlite3.connect("s.db")
     cursor = conn.cursor()
     cursor.execute(
         """
-        SELECT time, subject, teacher, room FROM schedule 
+        SELECT time, subject, teacher, room, class_type, date_range FROM schedule
         WHERE course = ? AND LOWER(direction) = LOWER(?) AND LOWER(day) = LOWER(?)
-        ORDER BY 
-            CAST(SUBSTR(time, 1, INSTR(time, ' ') - 1) AS INTEGER), 
+          AND (week = '' OR week = ?)
+        ORDER BY
+            CAST(SUBSTR(time, 1, INSTR(time, ' ') - 1) AS INTEGER),
             time
         """,
-        (course, direction, day)
+        (course, direction, day, week_type)
     )
     rows = cursor.fetchall()
     conn.close()
 
     if rows:
         lines = []
-        for time, subject, teacher, room in rows:
+        for time, subject, teacher, room, class_type, date_range in rows:
+            tags = [p for p in (class_type, date_range) if p]
+            subj_str = f"{subject} [{', '.join(tags)}]" if tags else subject
             info = ", ".join(filter(None, [teacher, room]))
-            lines.append(f"{time} — {subject}" + (f" ({info})" if info else ""))
+            lines.append(f"{time} — {subj_str}" + (f" ({info})" if info else ""))
         return "\n".join(lines)
     return "Расписание не найдено."
 
@@ -1171,10 +1272,7 @@ async def handle_message(message: Message):
         if message.text.isdigit() and int(message.text) in directions_by_course:
             course = int(message.text)
             user_states[user_id] = {"course": course, "step": "sub_choosing_direction"}
-            dir_buttons = [[KeyboardButton(text=dir_)] for dir_ in directions_by_course[course]]
-            dir_buttons.append([KeyboardButton(text="Назад")])
-            direction_keyboard = ReplyKeyboardMarkup(keyboard=dir_buttons, resize_keyboard=True)
-            await message.answer("Выберите направление для подписки:", reply_markup=direction_keyboard)
+            await message.answer("Выберите направление для подписки:", reply_markup=direction_keyboard_for(course))
         else:
             await message.answer("Пожалуйста, выберите корректный курс.")
         return
@@ -1185,10 +1283,11 @@ async def handle_message(message: Message):
             await message.answer("Выберите курс для подписки:", reply_markup=course_keyboard)
             return
         course = user_states[user_id]["course"]
-        if message.text in directions_by_course[course]:
-            add_subscription(user_id, course, message.text)
+        full_dir = resolve_direction_label(message.text, course)
+        if full_dir is not None:
+            add_subscription(user_id, course, full_dir)
             user_states.pop(user_id, None)
-            await message.answer(f"Вы подписаны на {course} курс, направление {message.text}.", reply_markup=assistant_keyboard)
+            await message.answer(f"Вы подписаны на {course} курс, направление {full_dir}.", reply_markup=assistant_keyboard)
         else:
             await message.answer("Пожалуйста, выберите направление из списка.")
         return
@@ -1241,14 +1340,7 @@ async def handle_message(message: Message):
         if message.text.isdigit() and int(message.text) in directions_by_course:
             course = int(message.text)
             user_states[user_id] = {"course": course, "step": "choosing_direction"}
-            # Формируем клавиатуру направлений и добавляем кнопку "Назад"
-            dir_buttons = [[KeyboardButton(text=dir_)] for dir_ in directions_by_course[course]]
-            dir_buttons.append([KeyboardButton(text="Назад")])
-            direction_keyboard = ReplyKeyboardMarkup(
-                keyboard=dir_buttons,
-                resize_keyboard=True
-            )
-            await message.answer("Выберите направление:", reply_markup=direction_keyboard)
+            await message.answer("Выберите направление:", reply_markup=direction_keyboard_for(course))
         else:
             await message.answer("Пожалуйста, выберите корректный курс.")
         return
@@ -1256,14 +1348,14 @@ async def handle_message(message: Message):
     # выбор направления
     if isinstance(user_states.get(user_id), dict) and user_states[user_id].get("step") == "choosing_direction":
         course = user_states[user_id]["course"]
-        # Обработка кнопки "Назад" при выборе направления: возвращаемся к выбору курса
         if message.text == "Назад":
             user_states[user_id] = "choosing_course"
             await message.answer("Выберите курс:", reply_markup=course_keyboard)
             return
 
-        if message.text in directions_by_course[course]:
-            user_states[user_id]["direction"] = message.text
+        full_dir = resolve_direction_label(message.text, course)
+        if full_dir is not None:
+            user_states[user_id]["direction"] = full_dir
             user_states[user_id]["step"] = "choosing_day"
             await message.answer("Выберите день недели:", reply_markup=day_keyboard)
         else:
@@ -1274,17 +1366,9 @@ async def handle_message(message: Message):
     if isinstance(user_states.get(user_id), dict) and user_states[user_id].get("step") == "choosing_day":
         course = user_states[user_id]["course"]
         direction = user_states[user_id]["direction"]
-        # Обработка кнопки "Назад" при выборе дня: возвращаемся к выбору направления
         if message.text == "Назад":
             user_states[user_id]["step"] = "choosing_direction"
-            # Воссоздаём клавиатуру направлений с кнопкой "Назад"
-            dir_buttons = [[KeyboardButton(text=dir_)] for dir_ in directions_by_course[course]]
-            dir_buttons.append([KeyboardButton(text="Назад")])
-            direction_keyboard = ReplyKeyboardMarkup(
-                keyboard=dir_buttons,
-                resize_keyboard=True
-            )
-            await message.answer("Выберите направление:", reply_markup=direction_keyboard)
+            await message.answer("Выберите направление:", reply_markup=direction_keyboard_for(course))
             return
 
         schedule_text = get_schedule_by_course(course, direction, message.text)
