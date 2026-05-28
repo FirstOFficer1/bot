@@ -21,6 +21,8 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import hmac
 import os
 import secrets
@@ -194,6 +196,44 @@ def _current_vk_id() -> int | None:
     """Возвращает VK ID текущего юзера (через g.user)."""
     user = getattr(g, "user", None)
     return user["vk_id"] if user else None
+
+
+def verify_vk_launch_sign(args, secret: str) -> bool:
+    """Проверяет подпись launch-параметров VK Mini App (HMAC-SHA256).
+
+    VK при открытии Mini App передаёт параметры vk_* и поле `sign`. Подпись:
+    отсортированные vk_*-параметры → urlencode → HMAC-SHA256 на «защищённом
+    ключе» приложения → base64-urlsafe без padding. Сравнение константное.
+
+    Возвращает True только если sign присутствует и совпадает. Если sign нет
+    (обычный заход не из VK) — False (вызывающий решает, что делать).
+    """
+    if not secret:
+        return False
+    sign = args.get("sign", "")
+    if not sign:
+        return False
+    vk_params = sorted((k, v) for k, v in args.items() if k.startswith("vk_"))
+    if not vk_params:
+        return False
+    from urllib.parse import urlencode
+    query = urlencode(vk_params)
+    digest = hmac.new(secret.encode(), query.encode(), hashlib.sha256).digest()
+    expected = base64.urlsafe_b64encode(digest).decode().rstrip("=")
+    return hmac.compare_digest(expected, sign)
+
+
+@app.before_request
+def _check_vk_sign():
+    """Мягкая проверка VK launch-подписи: не блокирует (доступ всё равно по OTP),
+    но логирует подделки в аудит — это и наблюдаемость, и галочка для модерации
+    VK, что приложение корректно обрабатывает launch-параметры."""
+    if "sign" not in request.args:
+        return
+    secret = os.getenv("VK_APP_SECRET", "")
+    g.vk_sign_ok = verify_vk_launch_sign(request.args, secret)
+    if not g.vk_sign_ok:
+        audit.log(None, "vk.sign_invalid", _client_ip(), request.path)
 
 
 @app.before_request
@@ -1311,7 +1351,12 @@ _LOGIN_TPL = """
       <button class="submit" type="submit">Войти →</button>
     </form>
 
-    <div class="foot">elschedule.ru · защищённое соединение</div>
+    <div class="foot">
+      elschedule.ru · защищённое соединение<br>
+      <a href="{{ url_for('privacy') }}" style="color:inherit;">Политика конфиденциальности</a>
+      ·
+      <a href="{{ url_for('terms') }}" style="color:inherit;">Условия использования</a>
+    </div>
   </div>
 </body>
 </html>
@@ -2349,6 +2394,145 @@ def _render_page(title: str, content_tpl: str, **ctx):
 def login():
     error = request.args.get("error")
     return render_template_string(_LOGIN_TPL, error=error)
+
+
+# ── Юридические страницы (публичные, нужны для модерации VK) ───────────────────
+
+_LEGAL_TPL = """<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#10B981">
+  <title>{{ title }} — Электронное расписание</title>
+  <style>
+    :root { --accent:#10B981; --bg:#0f1110; --surface:#161a18; --text:#e8eae6; --muted:#9aa39c; --border:#262b27; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--text);
+      font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+      line-height:1.65; padding:24px 16px; }
+    .wrap { max-width:760px; margin:0 auto; }
+    .card { background:var(--surface); border:1px solid var(--border);
+      border-radius:16px; padding:28px 26px; }
+    h1 { font-size:24px; margin:0 0 4px; }
+    h2 { font-size:17px; margin:26px 0 8px; color:var(--accent); }
+    .upd { color:var(--muted); font-size:13px; margin-bottom:18px; }
+    p, li { font-size:15px; color:var(--text); }
+    ul { padding-left:20px; }
+    a { color:var(--accent); }
+    .back { display:inline-block; margin-top:24px; color:var(--muted); text-decoration:none; font-size:14px; }
+    .back:hover { color:var(--accent); }
+    code { background:#0c0e0d; padding:1px 6px; border-radius:5px; font-size:13px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>{{ title }}</h1>
+      <div class="upd">Последнее обновление: {{ updated }}</div>
+      {{ body | safe }}
+      <a class="back" href="{{ url_for('login') }}">← Назад ко входу</a>
+    </div>
+  </div>
+</body>
+</html>"""
+
+_PRIVACY_BODY = """
+<p>Сервис «Электронное расписание» (далее — «Сервис», сайт <code>elschedule.ru</code>
+и VK Mini App) предоставляет студентам ФФМОИиТ ЧГПУ доступ к расписанию занятий,
+напоминаниям и заметкам. Настоящая Политика описывает, какие данные мы
+обрабатываем и зачем.</p>
+
+<h2>1. Какие данные мы собираем</h2>
+<ul>
+  <li><b>Идентификатор VK (VK ID)</b> — для привязки ваших настроек, заметок и
+      напоминаний к аккаунту.</li>
+  <li><b>Имя и фамилия</b> — отображаемое имя, получаемое через VK API
+      исключительно для показа в интерфейсе.</li>
+  <li><b>Учебные настройки</b> — выбранные курс и направление.</li>
+  <li><b>Пользовательский контент</b> — заметки, напоминания, дедлайны и
+      подписки на рассылку расписания, которые вы создаёте сами.</li>
+  <li><b>Технические данные</b> — IP-адрес (для защиты от перебора), время
+      входа, журнал действий администраторов.</li>
+  <li><b>Файлы cookie</b> — сессионная кука и токен «запомнить меня» для входа
+      без повторного ввода кода.</li>
+</ul>
+
+<h2>2. Зачем мы используем данные</h2>
+<ul>
+  <li>Чтобы показывать ваше персональное расписание и напоминания.</li>
+  <li>Чтобы сохранять ваши заметки и настройки между сессиями.</li>
+  <li>Чтобы отправлять уведомления об изменениях расписания (если вы подписаны).</li>
+  <li>Чтобы защищать Сервис от злоупотреблений (ограничение частоты входов).</li>
+</ul>
+
+<h2>3. Передача третьим лицам</h2>
+<p>Мы <b>не продаём и не передаём</b> ваши персональные данные третьим лицам.
+Имя запрашивается у VK API только для отображения. Данные хранятся на нашем
+сервере и не используются в рекламных целях.</p>
+
+<h2>4. Хранение и удаление</h2>
+<p>Данные хранятся, пока вы пользуетесь Сервисом. Вы можете в любой момент
+удалить свои заметки, напоминания, дедлайны и подписки прямо в интерфейсе
+(раздел «Моё расписание» → кнопки удаления). Для полного удаления аккаунта и
+всех связанных данных напишите боту в VK.</p>
+
+<h2>5. Безопасность</h2>
+<p>Соединение защищено HTTPS. Вход выполняется по одноразовому коду из VK-бота.
+Применяются защита от перебора (rate-limit), CSRF-токены и политика Content
+Security Policy.</p>
+
+<h2>6. Контакты</h2>
+<p>По вопросам обработки данных пишите администратору через VK-бота Сервиса.</p>
+"""
+
+_TERMS_BODY = """
+<p>Используя Сервис «Электронное расписание», вы соглашаетесь с настоящими
+условиями.</p>
+
+<h2>1. Назначение</h2>
+<p>Сервис предоставляет справочную информацию о расписании занятий, а также
+инструменты для личных заметок, напоминаний и дедлайнов. Сервис носит
+вспомогательный характер; официальным источником расписания остаётся ваше
+учебное заведение.</p>
+
+<h2>2. Учётная запись</h2>
+<p>Вход выполняется по одноразовому коду, выдаваемому VK-ботом. Вы отвечаете за
+сохранность доступа к своему аккаунту VK.</p>
+
+<h2>3. Допустимое использование</h2>
+<ul>
+  <li>Не пытайтесь получить несанкционированный доступ к чужим данным или
+      административным функциям.</li>
+  <li>Не используйте Сервис для рассылки спама или вредоносного контента.</li>
+  <li>Не нарушайте работу Сервиса автоматизированными запросами.</li>
+</ul>
+
+<h2>4. Ответственность</h2>
+<p>Сервис предоставляется «как есть». Администрация прилагает усилия для
+точности расписания, но не гарантирует отсутствие ошибок и не несёт
+ответственности за решения, принятые на основе данных Сервиса.</p>
+
+<h2>5. Изменения</h2>
+<p>Условия могут обновляться. Продолжая пользоваться Сервисом, вы принимаете
+актуальную редакцию.</p>
+"""
+
+
+@app.route("/privacy", methods=["GET"])
+def privacy():
+    return render_template_string(
+        _LEGAL_TPL, title="Политика конфиденциальности",
+        updated="28 мая 2026", body=_PRIVACY_BODY,
+    )
+
+
+@app.route("/terms", methods=["GET"])
+def terms():
+    return render_template_string(
+        _LEGAL_TPL, title="Пользовательское соглашение",
+        updated="28 мая 2026", body=_TERMS_BODY,
+    )
 
 
 def _client_ip() -> str:
