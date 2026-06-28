@@ -33,7 +33,11 @@ async def run(bot) -> None:
             desc_line = f"\n📝 {description}" if description else ""
             deadline_fmt = deadline_at.strftime("%d.%m.%Y %H:%M")
 
-            if not n_1day and datetime.timedelta(hours=23) <= delta <= datetime.timedelta(hours=25):
+            # Логика «порог пересечён», а не «попали в узкое окно»: уведомление
+            # уходит, как только до дедлайна осталось не больше порога — и если
+            # бот в этот момент лежал, оно «догонит» на ближайшем тике, а не
+            # потеряется навсегда (флаг notified выставляется только по факту).
+            if not n_1day and datetime.timedelta(hours=1) < delta <= datetime.timedelta(hours=24):
                 try:
                     ok = await sender.send(
                         bot, uid,
@@ -46,7 +50,7 @@ async def run(bot) -> None:
                 except Exception:
                     logging.exception("Deadline 1day send failure id=%s", did)
 
-            if not n_1hour and datetime.timedelta(minutes=50) <= delta <= datetime.timedelta(minutes=70):
+            if not n_1hour and datetime.timedelta(0) < delta <= datetime.timedelta(hours=1):
                 try:
                     ok = await sender.send(
                         bot, uid,

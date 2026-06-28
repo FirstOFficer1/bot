@@ -10,7 +10,7 @@ import itertools
 import logging
 import time
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Callable, Iterable, Optional
 
 import requests
 
@@ -72,8 +72,16 @@ def send_one(uid: int, text: str, counter: itertools.count) -> tuple[bool, int |
         return False, None
 
 
-def broadcast(text: str, uids: Iterable[int]) -> BroadcastResult:
-    """Шлёт сообщение всем uids. Юзеров с кодами 901/902/917 — отключает."""
+def broadcast(
+    text: str,
+    uids: Iterable[int],
+    progress: Optional[Callable[[int, int, int], None]] = None,
+) -> BroadcastResult:
+    """Шлёт сообщение всем uids. Юзеров с кодами 901/902/917 — отключает.
+
+    Если передан `progress`, он вызывается после каждой отправки с текущими
+    (sent, failed, disabled) — для отображения прогресса в фоновой рассылке.
+    """
     if not config.VK_TOKEN:
         raise RuntimeError("VK_TOKEN не задан")
     counter = itertools.count()
@@ -92,6 +100,11 @@ def broadcast(text: str, uids: Iterable[int]) -> BroadcastResult:
             if code in _USER_DEAD_CODES:
                 subscriptions.disable_all_for_user(uid)
                 disabled.append(uid)
+        if progress is not None:
+            try:
+                progress(sent, failed, len(disabled))
+            except Exception:
+                logging.exception("broadcast progress callback failed")
         time.sleep(_RATE_DELAY_SEC)
     return BroadcastResult(sent=sent, failed=failed, disabled_uids=disabled)
 

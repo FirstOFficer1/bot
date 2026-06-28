@@ -29,6 +29,7 @@ import secrets
 import sqlite3
 import sys
 import tempfile
+import threading
 import traceback
 from functools import wraps
 from pathlib import Path
@@ -1719,9 +1720,13 @@ _UPLOAD_CONTENT = """
 <div class="alert alert-success">
   ✅ Расписание обновлено: <strong>{{ commit_result.row_count }}</strong> записей.
   {% if commit_result.broadcast %}
-    📢 Уведомления отправлены: {{ commit_result.broadcast.sent }} успешно,
-    {{ commit_result.broadcast.failed }} с ошибкой,
-    {{ commit_result.broadcast.disabled }} подписок отключено (юзер заблокировал бота).
+    {% if commit_result.broadcast.started %}
+      📢 Рассылка уведомлений запущена для {{ commit_result.broadcast.total }} подписчиков —
+      прогресс смотри на <a href="{{ url_for('broadcast_page') }}">странице рассылки</a>.
+    {% else %}
+      📢 Рассылка не запущена: другая рассылка ещё идёт. Повтори позже на
+      <a href="{{ url_for('broadcast_page') }}">странице рассылки</a>.
+    {% endif %}
   {% endif %}
   <br>Бот подхватит изменения в течение минуты (hot-reload).
 </div>
@@ -2592,7 +2597,7 @@ def logout():
         try:
             panel_remember.revoke(token)
         except Exception:
-            pass
+            logging.exception("Не удалось отозвать remember-token при logout")
     session.clear()
     resp = redirect(url_for("login"))
     _clear_remember_cookie(resp)
@@ -2936,15 +2941,14 @@ def upload_commit():
             from import_excel import import_schedule
             import_schedule(excel_path, SCHEDULE_DB_S)
         except Exception:
-            pass
-        # Рассылка подписчикам (опционально)
+            logging.exception("Не удалось обновить s.db (Telegram-бот) после загрузки")
+        # Рассылка подписчикам (опционально) — в фоне, чтобы не держать запрос.
         if notify:
-            try:
-                uids = notifier.subscribed_uids()
-                br = notifier.broadcast(_BROADCAST_TEXT, uids)
-                result["broadcast"] = br.as_dict()
-            except Exception:
-                result["broadcast"] = {"error": traceback.format_exc()}
+            uids = notifier.subscribed_uids()
+            if _start_broadcast(_BROADCAST_TEXT, uids, _current_vk_id()):
+                result["broadcast"] = {"started": True, "total": len(uids)}
+            else:
+                result["broadcast"] = {"started": False, "total": len(uids)}
     except Exception:
         return _render_page(
             "Загрузить расписание",
@@ -3093,7 +3097,7 @@ def api_schedule_commit():
             from import_excel import import_schedule
             import_schedule(excel_path, SCHEDULE_DB_S)
         except Exception:
-            pass
+            logging.exception("Не удалось обновить s.db (Telegram-бот) через API")
         return jsonify(result)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -4519,6 +4523,40 @@ _BROADCAST_CONTENT = """
   </div>
 </form>
 
+<div id="bc-live" class="card mb-4" style="padding:18px;{% if not (bc and bc.status in ['running','done','error']) %}display:none;{% endif %}">
+  <div style="font-weight:600;margin-bottom:10px;">
+    Текущая рассылка: <span id="bc-status">{{ bc.status if bc else '' }}</span>
+  </div>
+  <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:13.5px;">
+    <div>👥 Всего: <strong id="bc-total">{{ bc.total or 0 }}</strong></div>
+    <div>📨 Отправлено: <strong id="bc-sent">{{ bc.sent or 0 }}</strong></div>
+    <div>⚠️ Ошибок: <strong id="bc-failed">{{ bc.failed or 0 }}</strong></div>
+    <div>🔕 Отписалось: <strong id="bc-disabled">{{ bc.disabled or 0 }}</strong></div>
+  </div>
+</div>
+<script>
+(function(){
+  var box=document.getElementById('bc-live');
+  if(!box) return;
+  function ru(s){return {running:'идёт…',done:'завершена ✅',error:'ошибка ⚠️',idle:''}[s]||s||'';}
+  function paint(d){
+    box.style.display = (d.status && d.status!=='idle') ? '' : 'none';
+    document.getElementById('bc-status').textContent = ru(d.status);
+    document.getElementById('bc-total').textContent = d.total||0;
+    document.getElementById('bc-sent').textContent = d.sent||0;
+    document.getElementById('bc-failed').textContent = d.failed||0;
+    document.getElementById('bc-disabled').textContent = d.disabled||0;
+  }
+  function poll(){
+    fetch('{{ url_for("broadcast_status") }}',{headers:{'X-Requested-With':'fetch'}})
+      .then(function(r){return r.json();})
+      .then(function(d){paint(d); if(d.status==='running'){setTimeout(poll,1500);}})
+      .catch(function(){});
+  }
+  {% if bc and bc.status=='running' %}poll();{% endif %}
+})();
+</script>
+
 {% if last_result %}
   <div class="card" style="padding:18px;">
     <div style="font-weight:600;margin-bottom:10px;">Результат прошлой рассылки</div>
@@ -4532,8 +4570,57 @@ _BROADCAST_CONTENT = """
 """
 
 
-# Хранилище последнего результата (в памяти процесса) — для показа на странице
-_LAST_BROADCAST: dict = {}
+# Состояние рассылки (в памяти процесса — панель запускается одним воркером).
+# Рассылка идёт в фоновом потоке, чтобы не блокировать HTTP-запрос на минуты.
+_LAST_BROADCAST: dict = {"status": "idle"}
+_BROADCAST_LOCK = threading.Lock()
+
+
+def _broadcast_snapshot() -> dict:
+    with _BROADCAST_LOCK:
+        return dict(_LAST_BROADCAST)
+
+
+def _start_broadcast(text: str, uids: list[int], actor) -> bool:
+    """Запускает рассылку в фоне. Возвращает False, если рассылка уже идёт."""
+    now_hms = _dt.datetime.now().strftime("%H:%M:%S")
+    with _BROADCAST_LOCK:
+        if _LAST_BROADCAST.get("status") == "running":
+            return False
+        _LAST_BROADCAST.clear()
+        _LAST_BROADCAST.update(
+            status="running", total=len(uids), sent=0, failed=0, disabled=0,
+            started_at=now_hms, finished_at=None,
+        )
+
+    def _progress(sent: int, failed: int, disabled: int) -> None:
+        with _BROADCAST_LOCK:
+            _LAST_BROADCAST.update(sent=sent, failed=failed, disabled=disabled)
+
+    def _worker() -> None:
+        try:
+            br = notifier.broadcast(text, uids, progress=_progress)
+            with _BROADCAST_LOCK:
+                _LAST_BROADCAST.update(
+                    status="done", sent=br.sent, failed=br.failed,
+                    disabled=len(br.disabled_uids),
+                    finished_at=_dt.datetime.now().strftime("%H:%M:%S"),
+                    result=br.as_dict(),
+                )
+            audit.log(
+                actor, "broadcast.send", f"{len(uids)} подписчиков",
+                f"sent={br.sent}, failed={br.failed}",
+            )
+        except Exception:
+            logging.exception("broadcast worker failed")
+            with _BROADCAST_LOCK:
+                _LAST_BROADCAST.update(
+                    status="error",
+                    finished_at=_dt.datetime.now().strftime("%H:%M:%S"),
+                )
+
+    threading.Thread(target=_worker, name="broadcast", daemon=True).start()
+    return True
 
 
 @app.route("/admin/broadcast", methods=["GET"])
@@ -4541,13 +4628,22 @@ _LAST_BROADCAST: dict = {}
 def broadcast_page():
     flash = request.args.get("flash")
     flash_kind = request.args.get("kind", "success")
+    snap = _broadcast_snapshot()
     return _render_page(
         "Рассылка", _BROADCAST_CONTENT,
         subscriber_count=_subscriber_count(),
         default_text="",
         flash=flash, flash_kind=flash_kind,
-        last_result=_LAST_BROADCAST.get("result"),
+        bc=snap,
+        last_result=snap.get("result"),
     )
+
+
+@app.route("/admin/broadcast/status")
+@admin_required
+def broadcast_status():
+    """JSON-снимок текущей рассылки — для live-прогресса на странице."""
+    return jsonify(_broadcast_snapshot())
 
 
 @app.route("/admin/broadcast/send", methods=["POST"])
@@ -4556,23 +4652,19 @@ def broadcast_send():
     text = (request.form.get("text") or "").strip()
     if len(text) < 3:
         return redirect(_with_flash(url_for("broadcast_page"), "Слишком короткое сообщение", "danger"))
-    try:
-        uids = notifier.subscribed_uids()
-        br = notifier.broadcast(text, uids)
-        result = br.as_dict() if hasattr(br, "as_dict") else {"sent": 0, "failed": 0}
-        _LAST_BROADCAST["result"] = result
-        audit.log(
-            _current_vk_id(), "broadcast.send",
-            f"{len(uids)} подписчиков",
-            f"sent={result.get('sent', 0)}, failed={result.get('failed', 0)}",
-        )
+    uids = notifier.subscribed_uids()
+    if not uids:
+        return redirect(_with_flash(url_for("broadcast_page"), "Нет активных подписчиков", "danger"))
+    if not _start_broadcast(text, uids, _current_vk_id()):
         return redirect(_with_flash(
             url_for("broadcast_page"),
-            f"✅ Отправлено: {result.get('sent', 0)}, ошибок: {result.get('failed', 0)}",
-            "success",
+            "Рассылка уже идёт — дождись её завершения", "danger",
         ))
-    except Exception as e:
-        return redirect(_with_flash(url_for("broadcast_page"), f"Ошибка: {e}", "danger"))
+    return redirect(_with_flash(
+        url_for("broadcast_page"),
+        f"📤 Рассылка запущена для {len(uids)} подписчиков. Прогресс — ниже.",
+        "success",
+    ))
 
 
 # ── Запуск ────────────────────────────────────────────────────────────────────
