@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ..keyboards import MAIN_KB
+from ..keyboards import MAIN_KB, MISC_KB, NOTES_KB, PLANNER_KB
 from ..state import store
 
 _INTRO_KEYWORDS = {"начать", "старт", "/start", "start", "меню", "главное меню"}
@@ -28,6 +28,22 @@ async def try_intro(_bot, message, _state, text, uid) -> bool:
         await message.answer("Главное меню:", keyboard=MAIN_KB)
         return True
     return False
+
+
+_CATEGORIES = {
+    "📝 Заметки": (NOTES_KB, "📝 Заметки:"),
+    "⏰ Планировщик": (PLANNER_KB, "⏰ Планировщик:"),
+    "⚙️ Прочее": (MISC_KB, "⚙️ Прочее:"),
+}
+
+
+async def try_category(_bot, message, _state, text, uid) -> bool:
+    if text not in _CATEGORIES:
+        return False
+    kb, prompt = _CATEGORIES[text]
+    store.pop(uid, None)
+    await message.answer(prompt, keyboard=kb)
+    return True
 
 
 async def try_help(_bot, message, _state, text, _uid) -> bool:
@@ -56,7 +72,7 @@ async def try_help(_bot, message, _state, text, _uid) -> bool:
         "💬 Обратная связь\n"
         "Напиши предложение, вопрос или сообщи об ошибке — администратор получит уведомление.\n\n"
         "Если что-то пошло не так — напиши «Меню» для возврата в главное меню.",
-        keyboard=MAIN_KB,
+        keyboard=MISC_KB,
     )
     return True
 

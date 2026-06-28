@@ -26,6 +26,7 @@ from ..state import store
 # Порядок имеет значение: common перехватывает "Меню" / приветствие первым.
 _PIPELINE = (
     common.try_intro,
+    common.try_category,
     panel_login.try_handle,
     schedule.try_handle,
     notes.try_handle,
