@@ -674,10 +674,11 @@ _BASE_TPL = """
   <script src="https://unpkg.com/@vkontakte/vk-bridge/dist/browser.min.js"></script>
   <script>try{if(window.vkBridge)vkBridge.send("VKWebAppInit").catch(function(){});}catch(e){}</script>
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#10B981">
+  <meta name="theme-color" content="#C21E41">
   <meta name="robots" content="noindex, nofollow, noarchive">
   <meta name="googlebot" content="noindex, nofollow">
   <title>{{ page_title }} — Электронное расписание</title>
+  <link rel="icon" href="/static/logo-mark.svg" type="image/svg+xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -694,7 +695,10 @@ _BASE_TPL = """
       --font-mono: 'JetBrains Mono', ui-monospace, monospace;
       --fs-xs: 12px; --fs-sm: 13px; --fs-base: 14px; --fs-md: 15px;
       --fs-lg: 17px; --fs-xl: 20px; --fs-2xl: 26px; --fs-3xl: 34px;
-      --accent: #10B981;
+      /* Фирменный цвет ЧГПУ им. И. Я. Яковлева — тот же, что в логотипе
+         (chgpu.edu.ru/uploads/logotip.svg). Остальная палитра выводится из него
+         через color-mix, поэтому смена акцента — правка одной строки. */
+      --accent: #C21E41;
       --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
       --accent-soft-2: color-mix(in srgb, var(--accent) 6%, transparent);
       --accent-fg: #ffffff;
@@ -753,11 +757,10 @@ _BASE_TPL = """
       border-bottom: 1px solid var(--sidebar-border);
     }
     .sb-logo {
-      width: 36px; height: 36px; flex: none; border-radius: 10px;
-      background: var(--accent); color: var(--accent-fg);
-      display: grid; place-items: center;
-      font-weight: 800; font-size: 16px;
-      box-shadow: 0 6px 16px -6px color-mix(in srgb, var(--accent) 65%, transparent);
+      width: 36px; height: 36px; flex: none;
+      object-fit: contain;
+      /* Знак — тонкая линейная графика: подложка под ним только мешает,
+         а на тёмной теме фирменный красный читается сам по себе. */
     }
     .sb-brand-text { min-width: 0; flex: 1; }
     .sb-brand-name { font-weight: 700; font-size: 13.5px; letter-spacing: -.005em; }
@@ -816,7 +819,11 @@ _BASE_TPL = """
       border-radius: 999px; font-size: 10px; font-weight: 800;
       text-transform: uppercase; letter-spacing: .05em;
     }
-    .role-pill.owner { background: linear-gradient(135deg, #FB7185, #E11D48); color: white; }
+    /* Раньше бейдж был красным. После перехода на фирменный красный роль
+       сливалась с акцентом и переставала читаться как отдельная метка —
+       владелец теперь золотой, а красный остаётся за акцентом и опасными
+       действиями. */
+    .role-pill.owner { background: linear-gradient(135deg, #F4C245, #C99A21); color: #3B2C05; }
     .role-pill.admin { background: linear-gradient(135deg, #818CF8, #6366F1); color: white; }
     .role-pill.user  { background: var(--surface-3); color: var(--text-2); }
 
@@ -1332,7 +1339,7 @@ _BASE_TPL = """
 
 {% macro brand_block() %}
   <div class="sb-brand">
-    <div class="sb-logo">Р</div>
+    <img class="sb-logo" src="/static/logo-mark.svg" alt="" width="36" height="36">
     <div class="sb-brand-text">
       <div class="sb-brand-name">Электронное расписание</div>
       <div class="sb-brand-sub">ФФМОИиТ · VK-бот</div>
@@ -1376,7 +1383,7 @@ _BASE_TPL = """
        id="mobileSidebar" aria-labelledby="mobileSidebarLabel" style="width: 280px;">
     <div class="offcanvas-header" style="border-bottom:1px solid var(--sidebar-border);">
       <div style="display:flex;align-items:center;gap:10px;">
-        <div class="sb-logo">Р</div>
+        <img class="sb-logo" src="/static/logo-mark.svg" alt="" width="34" height="34">
         <div>
           <div style="font-weight:700;font-size:13px;">Электронное расписание</div>
           <div style="font-size:11px;color:var(--sidebar-fg-muted);">ФФМОИиТ · VK-бот</div>
@@ -1425,15 +1432,16 @@ _LOGIN_TPL = """
   <script src="https://unpkg.com/@vkontakte/vk-bridge/dist/browser.min.js"></script>
   <script>try{if(window.vkBridge)vkBridge.send("VKWebAppInit").catch(function(){});}catch(e){}</script>
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#10B981">
+  <meta name="theme-color" content="#C21E41">
   <meta name="robots" content="noindex, nofollow, noarchive">
   <title>Вход — Электронное расписание</title>
+  <link rel="icon" href="/static/logo-mark.svg" type="image/svg+xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <style>
     :root {
-      --accent: #10B981;
+      --accent: #C21E41;   /* фирменный цвет вуза, как в основном шаблоне */
       --accent-fg: #fff;
       --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
       --accent-ring: color-mix(in srgb, var(--accent) 30%, transparent);
@@ -1465,10 +1473,14 @@ _LOGIN_TPL = """
                   0 12px 32px -8px rgba(20,20,17,.08);
       padding: 36px 32px;
     }
+    /* Вход — единственная страница, которую видит незнакомый человек:
+       здесь уместен полный логотип с подписью, а не только знак. */
     .brand {
-      display: flex; align-items: center; gap: 12px;
+      display: flex; flex-direction: column; align-items: center;
+      text-align: center; gap: 14px;
       margin-bottom: 22px;
     }
+    .brand-logo-full { width: min(240px, 70%); height: auto; display: block; }
     .brand-logo {
       width: 44px; height: 44px; border-radius: 12px;
       background: var(--accent); color: var(--accent-fg);
@@ -1551,10 +1563,11 @@ _LOGIN_TPL = """
 <body>
   <div class="login-shell">
     <div class="brand">
-      <div class="brand-logo">Р</div>
+      <img class="brand-logo-full" src="/static/logo-full.svg"
+           alt="Университет Яковлева" width="240" height="119">
       <div class="brand-text">
         <div class="brand-name">Электронное расписание</div>
-        <div class="brand-sub">ФФМОИиТ · ЧГПУ</div>
+        <div class="brand-sub">ФФМОИиТ · VK-бот</div>
       </div>
     </div>
 
@@ -2653,10 +2666,11 @@ _LEGAL_TPL = """<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#10B981">
+  <meta name="theme-color" content="#C21E41">
   <title>{{ title }} — Электронное расписание</title>
+  <link rel="icon" href="/static/logo-mark.svg" type="image/svg+xml">
   <style>
-    :root { --accent:#10B981; --bg:#0f1110; --surface:#161a18; --text:#e8eae6; --muted:#9aa39c; --border:#262b27; }
+    :root { --accent:#C21E41; --bg:#0f1110; --surface:#161a18; --text:#e8eae6; --muted:#9aa39c; --border:#262b27; }
     * { box-sizing:border-box; }
     body { margin:0; background:var(--bg); color:var(--text);
       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
@@ -3800,7 +3814,7 @@ _USERS_CONTENT = """
             <td class="text-center">{{ u.counts.subscriptions or 0 }}</td>
             <td>
               {% if u.role == 'owner' %}
-                <span class="badge bg-danger">owner</span>
+                <span class="role-pill owner">owner</span>
               {% elif u.role == 'admin' %}
                 <span class="badge bg-success">admin</span>
               {% else %}
