@@ -21,7 +21,14 @@ def _housekeeping() -> None:
     а не в отдельном воркере, чтобы не плодить сущности: тик дедлайнов и так
     самый редкий из «уборочных».
     """
-    removed_codes = panel_codes.cleanup_old(config.PANEL_CODES_CLEANUP_DAYS)
+    # Каждая чистка в своём try: панель может держать write-lock, и раньше
+    # OperationalError отсюда обрывал весь тик — уведомления о дедлайнах
+    # пропускались, heartbeat не ставился, и /healthz начинал мигать.
+    try:
+        removed_codes = panel_codes.cleanup_old(config.PANEL_CODES_CLEANUP_DAYS)
+    except Exception:
+        logging.exception("Не удалось почистить коды входа")
+        removed_codes = 0
     removed_audit = audit.cleanup_older_than(config.AUDIT_KEEP_DAYS)
     if removed_codes or removed_audit:
         logging.info(

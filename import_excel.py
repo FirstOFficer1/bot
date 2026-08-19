@@ -307,10 +307,13 @@ def parse_cell(cell_text: str) -> list[dict]:
         if mt:
             subject0, teacher0, dates0 = _split_subject_teacher(entry[: mt.start()])
             room0, room_dates = _split_dates_from_room(mt.group(3))
+            # Неделю берём из маркера типа, а не из внешнего маркера ячейки:
+            # при `* Предмет, Препод * лк ** лб 426` обе записи получали «нечет»,
+            # то есть на нечётной неделе пара двоилась, а на чётной пропадала.
             for wk, ct in (("нечет", mt.group(1)), ("чёт", mt.group(2))):
                 results.append({
                     "subject": subject0, "teacher": teacher0, "room": room0,
-                    "week": week or wk, "class_type": _canon_type(ct),
+                    "week": wk, "class_type": _canon_type(ct),
                     "date_range": dates0 or room_dates,
                 })
             continue

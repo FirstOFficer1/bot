@@ -225,3 +225,33 @@ def test_two_classes_by_parity_still_split():
     by_week = {r["week"]: r["subject"] for r in recs}
     assert by_week["нечет"] == "Основы российской государственности"
     assert by_week["чёт"] == "Общий курс транспорта"
+
+
+def test_outer_marker_does_not_collapse_parity_types():
+    """Внешний маркер ячейки не должен схлопывать обе записи на одну неделю.
+
+    При `* Предмет, Препод * лк ** лб 426` получались две записи с week='нечет':
+    на нечётной неделе пара двоилась, на чётной пропадала, а в конфликтах
+    появлялась ложная накладка по аудитории.
+    """
+    from import_excel import parse_cell
+
+    recs = parse_cell("* Дизайн информационных систем, Евграфов Д. В. * лк ** лб 426")
+
+    assert len(recs) == 2
+    by_week = {r["week"]: r["class_type"] for r in recs}
+    assert by_week == {"нечет": "лк", "чёт": "лб"}
+
+
+def test_parity_types_produce_one_pair_per_week():
+    """На каждой неделе — ровно одна такая пара, без дублей."""
+    from import_excel import parse_cell
+
+    for cell in (
+        "Дизайн информационных систем, Евграфов Д. В. * лк ** лб 426",
+        "* Дизайн информационных систем, Евграфов Д. В. * лк ** лб 426",
+        "** Дизайн информационных систем, Евграфов Д. В. * лк ** лб 426",
+    ):
+        recs = parse_cell(cell)
+        weeks = [r["week"] for r in recs]
+        assert sorted(weeks) == ["нечет", "чёт"], f"неверные недели у ячейки: {cell!r}"

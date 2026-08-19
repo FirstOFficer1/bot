@@ -129,7 +129,10 @@ def run(base_url: str, headed: bool, shots_dir: Path | None, excel: Path) -> int
         shot(page, shots_dir, "04-upload-committed")
 
         # ── 7. Расписание видно на странице ──────────────────────────────────
-        page.goto(f"{base_url}/schedule")
+        # quick=all обязателен: страница по умолчанию показывает сегодняшний
+        # день, а демо-пары стоят в понедельник и вторник — со среды проверка
+        # падала бы на пустой странице.
+        page.goto(f"{base_url}/schedule?quick=all")
         content = page.content()
         check("Математический анализ" in content or "Базы данных" in content,
               "импортированные пары показываются в /schedule")

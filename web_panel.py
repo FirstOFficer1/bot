@@ -105,9 +105,12 @@ _TRUSTED_PROXIES = max(0, _bot_config.int_env("PANEL_TRUSTED_PROXIES", 0))
 if _TRUSTED_PROXIES:
     from werkzeug.middleware.proxy_fix import ProxyFix
 
+    # x_host=0 намеренно: наш nginx проставляет X-Real-IP и X-Forwarded-Proto,
+    # но X-Forwarded-Host не выставляет и не вырезает — значит, этот заголовок
+    # пришёл бы от клиента и мог подменить Host в генерации ссылок.
     app.wsgi_app = ProxyFix(
         app.wsgi_app, x_for=_TRUSTED_PROXIES, x_proto=_TRUSTED_PROXIES,
-        x_host=_TRUSTED_PROXIES, x_prefix=0,
+        x_host=0, x_prefix=0,
     )
 
 
@@ -125,7 +128,13 @@ def _security_headers(resp):
         "form-action 'self';")
     resp.headers.setdefault("X-Content-Type-Options", "nosniff")
     resp.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
-    resp.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    # X-Frame-Options не умеет списки доменов, а нам нужен iframe VK Mini App.
+    # Он и CSP frame-ancestors противоречили друг другу: браузер, уважающий XFO,
+    # блокировал ровно тот фрейм, который разрешает CSP. Оставляем один источник
+    # правды — frame-ancestors выше; для древних браузеров без CSP-3 ставим
+    # DENY только когда встраивание в VK не нужно (панель не за https).
+    if not PANEL_BASE_URL.startswith("https://"):
+        resp.headers.setdefault("X-Frame-Options", "DENY")
     if _secure_cookies:
         resp.headers.setdefault(
             "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
@@ -254,8 +263,14 @@ def _assert_owner_exists() -> None:
 
         if _pu.owner_ids():
             return
-    except Exception:
+    except Exception as exc:
+        # Раньше сбой чтения БД сообщался как «владелец не настроен», и админ
+        # шёл править .env вместо того, чтобы чинить базу.
         logging.exception("Не удалось проверить владельцев в panel_users")
+        raise SystemExit(
+            f"FATAL: не удалось прочитать список владельцев из {NOTES_DB}: {exc.__class__.__name__}. "
+            "Проверьте, что файл БД доступен на чтение и запись, и повторите запуск."
+        ) from exc
     raise SystemExit(
         "FATAL: не задан ни один владелец панели. "
         "Укажите ADMIN_ID (или ADMIN_VK_IDS) в .env — иначе управлять админами будет некому."
@@ -3383,12 +3398,14 @@ def _today_tomorrow_filter(quick: str) -> tuple[str, str]:
 
 
 # SQL-фрагмент для правильной сортировки дней (Пн → Сб) — стабильно для SQLite
-# Сортировать по колонке `time` как по тексту нельзя: в файлах вуза время
-# записано и как «1 пара 08:00-09:30», и как «8.15 - 9.45». Во втором случае
-# лексикографически «8» больше «1», и утренние пары уезжали в конец дня.
-# Берём число до первого пробела — номер пары в старом формате и час в новом.
+# Сортировать по колонке `time` как по тексту нельзя: в базах вуза время
+# записано тремя способами — «8:00-9:30», «8.15 - 9.45» и «1 пара 08:00-09:30».
+# CAST в SQLite берёт числовой префикс и останавливается на первом нечисловом
+# символе: 8, 8 и 1 соответственно. Выражение через INSTR(time,' ') здесь не
+# годится — на формате без пробела оно давало 0 для всех строк, и порядок
+# сваливался обратно в текстовый (11:20, 13:20, 8:00, 9:40).
 # То же выражение использует бот (vkbot/schedule/repo.py::get_day).
-_TIME_ORDER_SQL = "CAST(SUBSTR(time, 1, INSTR(time, ' ') - 1) AS INTEGER), time"
+_TIME_ORDER_SQL = "CAST(time AS INTEGER), time"
 
 # Типы занятий в исходниках пишут по-разному: «лк», «лек», «лекция». Плашка в
 # интерфейсе узкая, и «ЛЕКЦИЯ» ломала ряд карточек — приводим к короткой форме
@@ -3408,7 +3425,6 @@ def _type_short(value: str | None) -> str:
 
 
 app.jinja_env.globals["type_short"] = _type_short
-
 
 _DAY_ORDER_SQL = (
     "CASE day "

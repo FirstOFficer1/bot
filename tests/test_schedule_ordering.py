@@ -30,14 +30,34 @@ def client_owner():
 DIRECTION = "Информационные технологии и веб-приложения"
 DAY = "Среда"
 
-# Порядок вставки намеренно перемешан.
-PAIRS = [
-    ("12.00 - 13.30", "Математика"),
-    ("8.15 - 9.45", "Иностранный язык"),
-    ("15.20 - 16.50", "Философия"),
-    ("9.55 - 11.25", "Физика"),
-    ("13.40 - 15.10", "История"),
-]
+# В базах вуза встречаются три записи времени, и порядок вставки перемешан.
+# Формат без пробела — тот, что лежит на проде: именно на нём прошлая версия
+# сортировки молча ломалась (INSTR(time,' ') = 0 для каждой строки).
+FORMATS = {
+    "без пробела (прод)": [
+        ("13:20-14:50", "История"),
+        ("8:00-9:30", "Иностранный язык"),
+        ("11:20-12:50", "Математика"),
+        ("9:40-11:10", "Физика"),
+        ("15:00-16:30", "Философия"),
+    ],
+    "с пробелами (файл 2026/27)": [
+        ("12.00 - 13.30", "Математика"),
+        ("8.15 - 9.45", "Иностранный язык"),
+        ("15.20 - 16.50", "Философия"),
+        ("9.55 - 11.25", "Физика"),
+        ("13.40 - 15.10", "История"),
+    ],
+    "с номером пары (легаси)": [
+        ("3 пара 11:20-12:50", "Математика"),
+        ("1 пара 08:00-09:30", "Иностранный язык"),
+        ("5 пара 15:00-16:30", "Философия"),
+        ("2 пара 09:40-11:10", "Физика"),
+        ("4 пара 13:20-14:50", "История"),
+    ],
+}
+
+PAIRS = FORMATS["с пробелами (файл 2026/27)"]
 
 EXPECTED = ["Иностранный язык", "Физика", "Математика", "История", "Философия"]
 
@@ -119,3 +139,39 @@ def test_schedule_page_defaults_to_today(client_owner):
 def test_schedule_page_all_still_available(client_owner):
     resp = client_owner.get("/schedule?quick=all")
     assert resp.status_code == 200
+
+
+# ── Порядок держится на всех форматах времени, которые есть в базах ──────────
+
+@pytest.mark.parametrize("label", list(FORMATS))
+def test_order_holds_for_every_time_format(label):
+    """Регрессия: выражение через INSTR(time,' ') работало только с пробелами."""
+    with db.connect(config.SCHEDULE_DB) as conn:
+        conn.execute("DELETE FROM schedule")
+        for time_s, subject in FORMATS[label]:
+            conn.execute(
+                "INSERT INTO schedule (course, direction, day, time, subject, week) "
+                "VALUES (1, ?, ?, ?, ?, '')",
+                (DIRECTION, DAY, time_s, subject),
+            )
+
+    assert _ordered_subjects(web_panel._TIME_ORDER_SQL) == EXPECTED, (
+        f"неверный порядок для формата «{label}»"
+    )
+
+
+@pytest.mark.parametrize("label", list(FORMATS))
+def test_bot_matches_panel_for_every_format(label):
+    """Расписание в VK и в панели не должно расходиться ни на одном формате."""
+    with db.connect(config.SCHEDULE_DB) as conn:
+        conn.execute("DELETE FROM schedule")
+        for time_s, subject in FORMATS[label]:
+            conn.execute(
+                "INSERT INTO schedule (course, direction, day, time, subject, week) "
+                "VALUES (1, ?, ?, ?, ?, '')",
+                (DIRECTION, DAY, time_s, subject),
+            )
+
+    text = repo.get_day(1, DIRECTION, DAY, "чёт")
+    positions = [text.index(s) for s in EXPECTED]
+    assert positions == sorted(positions), f"бот выдал иной порядок для «{label}»"
