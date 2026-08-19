@@ -8,13 +8,15 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import timedelta
+
+from ..config import now_msk
 
 from ..db import connect
 
 
 def _now() -> str:
-    return datetime.now().isoformat(timespec="seconds")
+    return now_msk().isoformat(timespec="seconds")
 
 
 def log(actor_vk_id: int | None, action: str, target: str = "", details: str = "") -> None:
@@ -37,7 +39,7 @@ def cleanup_older_than(days: int) -> int:
     расписания и каждая рассылка — строка навсегда. Срок хранения задаётся
     `config.AUDIT_KEEP_DAYS`.
     """
-    cutoff = (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
+    cutoff = (now_msk() - timedelta(days=days)).isoformat(timespec="seconds")
     try:
         with connect() as conn:
             cur = conn.execute("DELETE FROM audit_log WHERE created_at < ?", (cutoff,))

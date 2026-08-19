@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import hashlib
 import secrets
-from datetime import datetime, timedelta
+from datetime import timedelta
+
+from ..config import now_msk
 
 from ..db import connect
 
@@ -21,7 +23,7 @@ COOKIE_NAME = "vkbot_rm"
 
 
 def _now() -> str:
-    return datetime.now().isoformat(timespec="seconds")
+    return now_msk().isoformat(timespec="seconds")
 
 
 def _hash(token: str) -> str:
@@ -29,7 +31,7 @@ def _hash(token: str) -> str:
 
 
 def _cutoff() -> str:
-    return (datetime.now() - timedelta(days=TOKEN_TTL_DAYS)).isoformat(timespec="seconds")
+    return (now_msk() - timedelta(days=TOKEN_TTL_DAYS)).isoformat(timespec="seconds")
 
 
 def issue(vk_id: int) -> str:

@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .. import config
+from ..config import now_msk
 from ..db import connect
 # Импортируем из модуля напрямую: `from . import repo` вернул бы не модуль, а
 # экземпляр ScheduleRepo — пакетный __init__ экспортирует под этим именем
@@ -103,7 +104,6 @@ def commit(excel_path: str, uploaded_by: str, original_filename: str) -> dict:
       4. Создаём запись в schedule_versions
       5. Триггерим hot-reload через файл-маркер
     """
-    from datetime import datetime
 
     # 1. Бэкап
     with closing(sqlite3.connect(config.SCHEDULE_DB)) as conn:
@@ -114,7 +114,7 @@ def commit(excel_path: str, uploaded_by: str, original_filename: str) -> dict:
         conn.commit()
 
     # 2. Сохраняем оригинальный Excel
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ts = now_msk().strftime("%Y%m%d_%H%M%S")
     safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in original_filename)
     saved_path = config.SCHEDULE_VERSIONS_DIR / f"{ts}_{safe_name}"
     shutil.copyfile(excel_path, saved_path)
@@ -129,7 +129,7 @@ def commit(excel_path: str, uploaded_by: str, original_filename: str) -> dict:
             "(uploaded_at, original_filename, row_count, uploaded_by, file_path) "
             "VALUES (?,?,?,?,?)",
             (
-                datetime.now().isoformat(timespec="seconds"),
+                now_msk().isoformat(timespec="seconds"),
                 original_filename,
                 count,
                 uploaded_by,

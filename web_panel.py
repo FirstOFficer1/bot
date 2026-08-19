@@ -5078,7 +5078,7 @@ def _broadcast_snapshot() -> dict:
 
 def _start_broadcast(text: str, uids: list[int], actor) -> bool:
     """Запускает рассылку в фоне. Возвращает False, если рассылка уже идёт."""
-    now_hms = _dt.datetime.now().strftime("%H:%M:%S")
+    now_hms = _bot_config.now_msk().strftime("%H:%M:%S")
     with _BROADCAST_LOCK:
         if _LAST_BROADCAST.get("status") == "running":
             return False
@@ -5099,7 +5099,7 @@ def _start_broadcast(text: str, uids: list[int], actor) -> bool:
                 _LAST_BROADCAST.update(
                     status="done", sent=br.sent, failed=br.failed,
                     disabled=len(br.disabled_uids),
-                    finished_at=_dt.datetime.now().strftime("%H:%M:%S"),
+                    finished_at=_bot_config.now_msk().strftime("%H:%M:%S"),
                     result=br.as_dict(),
                 )
             audit.log(
@@ -5111,7 +5111,7 @@ def _start_broadcast(text: str, uids: list[int], actor) -> bool:
             with _BROADCAST_LOCK:
                 _LAST_BROADCAST.update(
                     status="error",
-                    finished_at=_dt.datetime.now().strftime("%H:%M:%S"),
+                    finished_at=_bot_config.now_msk().strftime("%H:%M:%S"),
                 )
 
     threading.Thread(target=_worker, name="broadcast", daemon=True).start()

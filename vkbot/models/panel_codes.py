@@ -6,7 +6,9 @@ import collections
 import secrets
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import timedelta
+
+from ..config import now_msk
 
 from ..db import connect
 
@@ -85,7 +87,7 @@ def cleanup_rate_limits() -> int:
 
 
 def _now_iso() -> str:
-    return datetime.now().isoformat(timespec="seconds")
+    return now_msk().isoformat(timespec="seconds")
 
 
 def _generate() -> str:
@@ -117,7 +119,7 @@ def verify(code: str) -> int | None:
     """Проверяет код, помечает использованным, возвращает user_id или None."""
     if not code or len(code) != CODE_LEN or not code.isdigit():
         return None
-    cutoff = (datetime.now() - timedelta(minutes=CODE_TTL_MIN)).isoformat(
+    cutoff = (now_msk() - timedelta(minutes=CODE_TTL_MIN)).isoformat(
         timespec="seconds"
     )
     with connect() as conn:
@@ -134,7 +136,7 @@ def verify(code: str) -> int | None:
 
 def cleanup_old(days: int = 1) -> int:
     """Удаляет коды старше N дней. Возвращает количество удалённых."""
-    cutoff = (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
+    cutoff = (now_msk() - timedelta(days=days)).isoformat(timespec="seconds")
     with connect() as conn:
         cur = conn.execute(
             "DELETE FROM panel_login_codes WHERE created_at < ?",

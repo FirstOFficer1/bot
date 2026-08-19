@@ -282,6 +282,8 @@ The smoke job needs no secrets — `VK_TOKEN` is empty and every DB goes to a te
   `backup.sh` (online SQLite copies + `schedule_versions.tar.gz`, integrity-checked,
   14-day rotation). Changing `PANEL_MAX_UPLOAD_MB` means changing
   `client_max_body_size` there too.
-- Server timezone must be `Europe/Moscow`: domain logic uses `now_msk()`, but audit
-  rows, login codes, `last_seen` and version stamps are written with server-local
-  `datetime.now()`.
+- Every timestamp — domain and bookkeeping alike — is written through
+  `config.now_msk()`, so the server's own timezone doesn't matter (prod runs UTC and
+  shares the box with another service, so it can't be changed for us). A guard test
+  (`tests/test_timestamps.py`) fails the suite if a bare `datetime.now()` reappears
+  in `vkbot/`, `web_panel.py` or `import_excel.py`.

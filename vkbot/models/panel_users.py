@@ -15,7 +15,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+
+from ..config import now_msk
 
 from ..db import connect
 
@@ -24,7 +25,7 @@ ROLE_OWNER = "owner"
 
 
 def _now() -> str:
-    return datetime.now().isoformat(timespec="seconds")
+    return now_msk().isoformat(timespec="seconds")
 
 
 def grant(
