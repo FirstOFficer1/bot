@@ -161,7 +161,34 @@ def run(base_url: str, headed: bool, shots_dir: Path | None, excel: Path) -> int
         resp = page.request.get(f"{base_url}/calendar.ics")
         check(resp.ok and "BEGIN:VCALENDAR" in resp.text(), "/calendar.ics валиден")
 
-        # ── 11. Выход ───────────────────────────────────────────────────────
+        # ── 11. Шапка на телефоне: плашка чётности не налезает на заголовок ──
+        # Регрессия: «🗓 Сейчас: нечет неделя» печаталась поверх названия
+        # страницы на любой телефонной ширине. На узком экране плашка обязана
+        # сокращаться, а название — обрезаться многоточием.
+        page.set_viewport_size({"width": 360, "height": 780})
+        page.goto(f"{base_url}/schedule?quick=all", wait_until="networkidle")
+        layout = page.evaluate(
+            """() => {
+                const chip = document.querySelector('.week-chip');
+                const title = document.querySelector('.topbar-crumbs strong');
+                if (!chip || !title) return {ok: false, reason: 'нет плашки или заголовка'};
+                const c = chip.getBoundingClientRect(), t = title.getBoundingClientRect();
+                const overlap = !(c.right <= t.left || c.left >= t.right
+                                  || c.bottom <= t.top || c.top >= t.bottom);
+                return {ok: !overlap,
+                        reason: overlap ? 'плашка налезает на заголовок' : '',
+                        wide: document.documentElement.scrollWidth
+                              > document.documentElement.clientWidth,
+                        text: chip.innerText.replace(/\s+/g, ' ').trim()};
+            }"""
+        )
+        shot(page, shots_dir, "08-mobile-header")
+        check(layout["ok"], f"шапка на телефоне не накладывается {layout.get('reason', '')}")
+        check(not layout["wide"], "на телефоне нет горизонтальной прокрутки")
+        check(len(layout["text"]) <= 14, f"плашка сокращена на узком экране: {layout['text']!r}")
+        page.set_viewport_size({"width": 1360, "height": 900})
+
+        # ── 12. Выход ───────────────────────────────────────────────────────
         page.goto(f"{base_url}/")
         page.click("button:has-text('Выйти')")
         page.wait_for_load_state()

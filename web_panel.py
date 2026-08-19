@@ -834,9 +834,26 @@ _BASE_TPL = """
       -webkit-backdrop-filter: saturate(150%) blur(8px);
       position: sticky; top: 0; z-index: 10;
     }
-    .topbar-crumbs { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-3); flex: 1; min-width: 0; }
-    .topbar-crumbs strong { color: var(--text); font-weight: 600; }
+    /* overflow+nowrap обязательны: без них длинное название страницы вылезало
+       за пределы своей колонки и печаталось поверх плашки чётности. */
+    .topbar-crumbs {
+      display: flex; align-items: center; gap: 8px; font-size: 13px;
+      color: var(--text-3); flex: 1 1 auto; min-width: 0;
+      overflow: hidden; white-space: nowrap;
+    }
+    .topbar-crumbs strong {
+      color: var(--text); font-weight: 600;
+      overflow: hidden; text-overflow: ellipsis;
+    }
     .topbar-crumbs .sep { opacity: .45; }
+    /* Плашка чётности не сжимается и не переносится — она короткая и важная. */
+    .week-chip {
+      flex: none; white-space: nowrap;
+      background: var(--accent-soft); color: var(--accent); border-color: transparent;
+      height: 26px; padding: 0 12px; border-radius: 999px;
+      display: inline-flex; align-items: center; gap: 4px;
+      font-size: 11.5px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase;
+    }
     .hamb {
       appearance: none; border: 1px solid var(--border);
       background: var(--surface); color: var(--text-2);
@@ -1023,8 +1040,14 @@ _BASE_TPL = """
       .app-shell { grid-template-columns: 1fr; }
       .sidebar.desktop-sb { display: none; }
       .hamb { display: inline-flex; }
-      .topbar { padding: 0 16px; height: 56px; }
+      .topbar { padding: 0 16px; height: 56px; gap: 8px; }
       .topbar-crumbs { font-size: 13px; }
+      /* Освобождаем ширину для названия страницы: «Панель /» на телефоне
+         не несёт информации, а плашка сокращается до «🗓 нечет». */
+      .topbar-crumbs .crumb-root,
+      .topbar-crumbs .sep,
+      .week-chip-long { display: none; }
+      .week-chip { padding: 0 10px; font-size: 11px; }
       .page { padding: 16px; gap: 16px; }
       .page-title h1, .page-title h2, .page-title h3 { font-size: 22px; }
       .stat-card .fs-2 { font-size: 24px !important; }
@@ -1371,13 +1394,15 @@ _BASE_TPL = """
     <div class="topbar">
       <button class="hamb" type="button" data-bs-toggle="offcanvas" data-bs-target="#mobileSidebar" aria-label="Меню">☰</button>
       <div class="topbar-crumbs">
-        <span>Панель</span>
+        <span class="crumb-root">Панель</span>
         <span class="sep">/</span>
         <strong>{{ page_title }}</strong>
       </div>
       {% if current_week %}
-        <span class="chip" style="background:var(--accent-soft);color:var(--accent);border-color:transparent;height:26px;padding:0 12px;font-weight:600;border-radius:999px;display:inline-flex;align-items:center;font-size:11.5px;letter-spacing:.03em;text-transform:uppercase;">
-          🗓 Сейчас: {{ current_week }} неделя
+        {# На телефоне остаётся только «🗓 нечет»: полная формулировка не влезала
+           и налезала на название страницы. #}
+        <span class="chip week-chip">
+          🗓<span class="week-chip-long"> Сейчас:</span> {{ current_week }}<span class="week-chip-long"> неделя</span>
         </span>
       {% endif %}
     </div>
