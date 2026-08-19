@@ -134,6 +134,20 @@ def verify(code: str) -> int | None:
         return int(row[0])
 
 
+def has_recent_code(user_id: int, minutes: int = 60) -> bool:
+    """Выписывался ли этому пользователю код за последние N минут.
+
+    Нужно, чтобы отличить «прислал в чат код входа» от случайного числа:
+    подсказку показываем только тому, кто действительно запрашивал код.
+    """
+    cutoff = (now_msk() - timedelta(minutes=minutes)).isoformat(timespec="seconds")
+    with connect() as conn:
+        return conn.execute(
+            "SELECT 1 FROM panel_login_codes WHERE user_id=? AND created_at >= ? LIMIT 1",
+            (user_id, cutoff),
+        ).fetchone() is not None
+
+
 def cleanup_old(days: int = 1) -> int:
     """Удаляет коды старше N дней. Возвращает количество удалённых."""
     cutoff = (now_msk() - timedelta(days=days)).isoformat(timespec="seconds")

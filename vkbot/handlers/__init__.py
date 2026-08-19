@@ -35,6 +35,9 @@ _PIPELINE = (
     subscriptions.try_handle,
     feedback.try_handle,
     common.try_help,
+    # Перед fallback: перехватывает только шестизначный код, и только у того,
+    # кто недавно его запрашивал.
+    panel_login.try_code_hint,
     common.fallback,
 )
 

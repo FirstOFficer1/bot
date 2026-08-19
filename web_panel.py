@@ -254,6 +254,17 @@ def _parse_owner_ids() -> set[int]:
 OWNER_VK_IDS: set[int] = _parse_owner_ids()
 
 
+def _normalize_code(raw: str | None) -> str:
+    """Оставляет от введённого кода только цифры.
+
+    Код приходит из чата VK, и при копировании к нему цепляются пробелы,
+    неразрывный пробел, а иногда невидимые символы. Пользователь видит
+    «правильные» шесть цифр и получает «неверный код» — самая обидная ошибка
+    на входе. Внутри всё равно проверяется, что цифр ровно шесть.
+    """
+    return "".join(ch for ch in (raw or "") if ch.isdigit())
+
+
 def _assert_owner_exists() -> None:
     """Панель без единого владельца неуправляема — падаем сразу, а не потом."""
     if OWNER_VK_IDS:
@@ -2768,7 +2779,7 @@ def login_code():
     пока браузер не вернул куку обратно. На всех последующих запросах
     источник правды — кука vkbot_rm.
     """
-    code = (request.form.get("code") or "").strip()
+    code = _normalize_code(request.form.get("code"))
     ip = _client_ip()
     # Сначала пробуем валидировать код — валидный код ВСЕГДА пускает,
     # даже при global/per-IP lock. Иначе ботнет может надолго забанить
@@ -4109,7 +4120,7 @@ def admin_revoke():
 
 def _step_up_error(actor_uid: int) -> str | None:
     """Проверяет код подтверждения. Возвращает текст ошибки или None, если всё чисто."""
-    code = (request.form.get("code") or "").strip()
+    code = _normalize_code(request.form.get("code"))
     ip = _client_ip()
     if not code:
         return "Нужен код из бота: операции с владением подтверждаются отдельно."

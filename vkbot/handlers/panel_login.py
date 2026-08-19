@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import os
+import re
 
 from ..keyboards import MAIN_KB
 from ..models import panel_codes, panel_users
@@ -63,4 +64,29 @@ async def try_handle(_bot, message, _state, text, uid) -> bool:
     # 2) Сам код — отдельным сообщением, чтобы long-press копировал ровно 6 цифр
     # без префиксов/пояснений/пробелов.
     await message.answer(code)
+    return True
+
+
+# Код приходит отдельным сообщением, и его естественно хочется отправить обратно
+# в чат — бот на это отвечал «Не понимаю эту команду». Подсказываем, куда его
+# на самом деле вводить. Хендлер стоит в конце пайплайна, поэтому не перехватит
+# цифры, которых ждёт активный диалог (номер заметки, время напоминания).
+_SIX_DIGITS_RE = re.compile(r"^\D{0,2}(\d{6})\D{0,2}$")
+
+
+async def try_code_hint(_bot, message, _state, text, uid) -> bool:
+    """Пользователь прислал код входа в чат вместо сайта."""
+    if not _SIX_DIGITS_RE.match((text or "").strip()):
+        return False
+    if not panel_codes.has_recent_code(uid):
+        return False
+
+    panel_url = os.getenv("PANEL_BASE_URL", "").rstrip("/") or "https://elschedule.ru"
+    await message.answer(
+        "Этот код вводится не здесь, а на сайте панели:\n"
+        f"{panel_url}/login\n\n"
+        "Открой ссылку, вставь код в поле на странице и нажми «Войти».\n"
+        "Если код уже просрочен — нажми «🔑 Войти в панель», выдам новый.",
+        keyboard=MAIN_KB,
+    )
     return True
