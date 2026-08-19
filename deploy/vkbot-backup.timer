@@ -1,0 +1,16 @@
+# Ежедневный бэкап в 04:30 по времени сервера.
+#   systemctl enable --now vkbot-backup.timer
+#   systemctl list-timers vkbot-backup   # когда следующий запуск
+
+[Unit]
+Description=Daily vkbot backup
+
+[Timer]
+OnCalendar=*-*-* 04:30:00
+# Если сервер был выключен в момент запуска — прогнать после старта.
+Persistent=true
+# Разброс, чтобы бэкап не совпадал с другими ночными задачами.
+RandomizedDelaySec=10m
+
+[Install]
+WantedBy=timers.target

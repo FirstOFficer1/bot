@@ -1,0 +1,37 @@
+# Разовый прогон бэкапа. Запускается таймером vkbot-backup.timer.
+#   cp deploy/vkbot-backup.{service,timer} /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now vkbot-backup.timer
+#   systemctl start vkbot-backup.service   # прогнать прямо сейчас
+#   journalctl -u vkbot-backup -n 30
+
+[Unit]
+Description=Backup vkbot databases and schedule versions
+# Бэкап не имеет смысла до монтирования дисков с данными.
+RequiresMountsFor=/opt/vkbot /var/backups
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/vkbot
+# Пути к базам берём из того же .env, что и сервисы: при DATA_DIR на volume
+# базы лежат не в каталоге проекта, и бэкап без этого копировал бы пустоту.
+EnvironmentFile=-/opt/vkbot/.env
+Environment=PROJECT_DIR=/opt/vkbot
+Environment=BACKUP_DIR=/var/backups/vkbot
+Environment=BACKUP_KEEP_DAYS=14
+# Через bash, а не напрямую: бит +x теряется при клонировании репозитория
+# с Windows-машины, и юнит молча падал бы с 203/EXEC.
+ExecStart=/bin/bash /opt/vkbot/deploy/backup.sh
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vkbot-backup
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+# Читаем проект, пишем только в каталог бэкапов. Дефис — на случай первого
+# запуска: без него systemd валит юнит (226/NAMESPACE) на ещё не созданном
+# каталоге, до того как скрипт успеет его создать.
+ReadWritePaths=-/var/backups/vkbot
+ExecStartPre=/bin/mkdir -p /var/backups/vkbot

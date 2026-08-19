@@ -1,0 +1,37 @@
+# VK-бот. Установка:
+#   cp deploy/vkbot.service /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now vkbot
+#   journalctl -u vkbot -f
+#
+# Пути ниже рассчитаны на /opt/vkbot — поправьте, если проект лежит иначе.
+
+[Unit]
+Description=VK schedule bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/vkbot
+EnvironmentFile=/opt/vkbot/.env
+ExecStart=/opt/vkbot/.venv/bin/python -m vkbot
+Restart=always
+RestartSec=5
+# Бот держит состояние диалогов в SQLite, поэтому мягкая остановка предпочтительнее.
+KillSignal=SIGINT
+TimeoutStopSec=20
+
+# Логи в journald
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vkbot
+
+# Минимальная изоляция
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/opt/vkbot
+
+[Install]
+WantedBy=multi-user.target

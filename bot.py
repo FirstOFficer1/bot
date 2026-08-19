@@ -19,11 +19,14 @@ def now_msk():
     return datetime.datetime.now(_MSK).replace(tzinfo=None)
 
 # ── SOCKS5 прокси с авто-ротацией ────────────────────────────────────
+# Раньше здесь был жёсткий список публичных прокси: через чужие узлы шёл весь
+# трафик Telegram, включая токен бота и сообщения пользователей. Теперь список
+# задаётся в .env и по умолчанию пуст — соединение идёт напрямую.
+#   TELEGRAM_PROXIES=socks5://user:pass@host:1080,socks5://host2:1080
 PROXY_LIST = [
-    "socks5://185.218.137.242:1080",   # NL
-    "socks5://167.172.161.22:1088",    # DE
-    "socks5://65.109.218.115:1080",    # FI
-    "socks5://91.217.81.131:1080",     # RU
+    p.strip()
+    for p in os.getenv("TELEGRAM_PROXIES", "").replace(";", ",").split(",")
+    if p.strip()
 ]
 _proxy_errors = 0
 _PROXY_ERROR_LIMIT = 8

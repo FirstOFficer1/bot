@@ -1,0 +1,36 @@
+# Веб-панель. Установка:
+#   cp deploy/vkpanel.service /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now vkpanel
+#   journalctl -u vkpanel -f
+#
+# ВАЖНО: ровно один процесс и один поток-владелец состояния.
+# _PENDING_UPLOADS / _LAST_BROADCAST / _ICS_CACHE живут в памяти процесса, поэтому
+# несколько воркеров сломают загрузку расписания («unknown or expired token»).
+# Масштабировать можно только после переноса этого состояния в БД.
+
+[Unit]
+Description=VK bot admin panel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/vkbot
+EnvironmentFile=/opt/vkbot/.env
+ExecStart=/opt/vkbot/.venv/bin/python web_panel.py
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vkpanel
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/opt/vkbot
+
+[Install]
+WantedBy=multi-user.target
