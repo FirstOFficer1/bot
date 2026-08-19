@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 
 import web_panel
-from vkbot.handlers import _PIPELINE, panel_login
+from vkbot.handlers import _PIPELINE
 from vkbot.models import panel_codes
 from vkbot.state import store
 
@@ -104,7 +104,7 @@ def client():
         pytest.param(lambda c: f"{c[:3]} {c[3:]}", id="с пробелом внутри"),
         pytest.param(lambda c: f"{c}\n", id="с переводом строки"),
         pytest.param(lambda c: f"\xa0{c}", id="с неразрывным пробелом"),
-        pytest.param(lambda c: f"{c}​", id="с невидимым символом"),
+        pytest.param(lambda c: f"{c}\u200b", id="с невидимым символом"),
         pytest.param(lambda c: f"Код: {c}", id="вместе с подписью"),
     ],
 )
