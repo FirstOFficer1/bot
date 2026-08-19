@@ -97,6 +97,11 @@
 
 - [ ] Установлен таймер: `cp deploy/vkbot-backup.{service,timer} /etc/systemd/system/`,
       `systemctl daemon-reload && systemctl enable --now vkbot-backup.timer`.
+- [ ] **Пути в юните поправлены под каталог установки.** В репозитории он
+      рассчитан на `/opt/vkbot`; если проект лежит иначе, перед копированием:
+      `sed 's#/opt/vkbot#/root/vkbot#g' deploy/vkbot-backup.service > /etc/systemd/system/vkbot-backup.service`.
+      Каталог с базами обязан быть в `ReadWritePaths`: SQLite в WAL-режиме
+      открывает базу на запись даже когда её только читают.
 - [ ] Разовый прогон прошёл: `systemctl start vkbot-backup.service`,
       `journalctl -u vkbot-backup -n 30` — есть строка `integrity_check ok`.
 - [ ] В `/var/backups/vkbot/<дата>/` лежат обе базы и `schedule_versions.tar.gz`
