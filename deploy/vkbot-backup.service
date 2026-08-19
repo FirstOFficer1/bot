@@ -33,5 +33,10 @@ ProtectHome=read-only
 # Читаем проект, пишем только в каталог бэкапов. Дефис — на случай первого
 # запуска: без него systemd валит юнит (226/NAMESPACE) на ещё не созданном
 # каталоге, до того как скрипт успеет его создать.
-ReadWritePaths=-/var/backups/vkbot
+# Каталог проекта тоже на запись, хотя мы «только читаем» базы: SQLite в
+# WAL-режиме открывает файл на запись даже для чтения (нужны -wal и -shm).
+# С ProtectHome=read-only и проектом в /root это давало «unable to open
+# database file» на первом же прогоне. Если данные вынесены через DATA_DIR —
+# добавьте и тот каталог.
+ReadWritePaths=-/var/backups/vkbot /opt/vkbot
 ExecStartPre=/bin/mkdir -p /var/backups/vkbot
