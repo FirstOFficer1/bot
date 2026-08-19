@@ -30,7 +30,6 @@ import sqlite3
 import sys
 import tempfile
 import threading
-import traceback
 from functools import wraps
 from pathlib import Path
 
@@ -48,8 +47,11 @@ from flask import (
     url_for,
 )
 
+from vkbot import config as _bot_config
 from vkbot import notifier, vk_names
-from vkbot.models import audit, panel_codes, panel_remember, panel_users, seen_users
+from vkbot.models import (
+    audit, heartbeats, panel_codes, panel_remember, panel_users, seen_users,
+)
 from vkbot.schedule import loader as schedule_loader
 
 load_dotenv()
@@ -64,6 +66,17 @@ logging.basicConfig(
 from flask_wtf.csrf import CSRFProtect, CSRFError
 csrf = CSRFProtect(app)
 app.config["WTF_CSRF_TIME_LIMIT"] = None  # держим токен пока живёт сессия
+# Загрузка расписания читается в память для валидации zip-структуры, поэтому
+# ограничиваем размер запроса. Реальный файл расписания — сотни килобайт.
+app.config["MAX_CONTENT_LENGTH"] = _bot_config.int_env("PANEL_MAX_UPLOAD_MB", 16) * 1024 * 1024
+
+
+@app.errorhandler(413)
+def _too_large(_e):
+    limit_mb = app.config["MAX_CONTENT_LENGTH"] // (1024 * 1024)
+    return (f"Файл слишком большой (лимит {limit_mb} МБ).", 413)
+
+
 @app.errorhandler(CSRFError)
 def _csrf_error(e):
     return ("CSRF token missing or invalid. Reload the page and try again.", 400)
@@ -84,6 +97,20 @@ _secure_cookies = os.getenv("PANEL_BASE_URL", "").startswith("https://")
 app.config["SESSION_COOKIE_SECURE"] = _secure_cookies
 app.config["SESSION_COOKIE_SAMESITE"] = "None" if _secure_cookies else "Lax"
 
+# _client_ip() читает X-Real-IP / X-Forwarded-For — без ProxyFix эти заголовки
+# можно подделать любым запросом и обойти per-IP лимит на /login/code.
+# PANEL_TRUSTED_PROXIES = число реальных прокси перед приложением (nginx → 1).
+# 0 (по умолчанию) = приложение смотрит в интернет напрямую, заголовкам не верим.
+_TRUSTED_PROXIES = max(0, _bot_config.int_env("PANEL_TRUSTED_PROXIES", 0))
+if _TRUSTED_PROXIES:
+    from werkzeug.middleware.proxy_fix import ProxyFix
+
+    app.wsgi_app = ProxyFix(
+        app.wsgi_app, x_for=_TRUSTED_PROXIES, x_proto=_TRUSTED_PROXIES,
+        x_host=_TRUSTED_PROXIES, x_prefix=0,
+    )
+
+
 @app.after_request
 def _security_headers(resp):
     resp.headers.setdefault("Content-Security-Policy",
@@ -92,7 +119,17 @@ def _security_headers(resp):
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; "
         "font-src 'self' https://fonts.gstatic.com; "
         "img-src 'self' data: https:; "
-        "connect-src 'self';")
+        "connect-src 'self'; "
+        "frame-ancestors https://vk.com https://*.vk.com https://vk.ru https://*.vk.ru; "
+        "base-uri 'self'; "
+        "form-action 'self';")
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    resp.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    if _secure_cookies:
+        resp.headers.setdefault(
+            "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+        )
     return resp
 
 
@@ -101,6 +138,70 @@ def robots_txt():
     """Запрещаем поисковикам индексировать панель целиком."""
     body = "User-agent: *\nDisallow: /\n"
     return body, 200, {"Content-Type": "text/plain; charset=utf-8"}
+
+
+# ── Проверка живости для внешнего монитора ────────────────────────────────────
+#
+# systemd видит только смерть процесса. Отказ, который реально случался, —
+# воркер бота молча встал: процесс жив, бот отвечает на сообщения, а напоминания
+# и пуши о парах не приходят. Здесь это видно — воркеры отмечаются в
+# worker_heartbeats, и просроченная отметка роняет ответ в 503.
+#
+# Маршрут открыт без авторизации: его дёргает монитор. Наружу отдаём только
+# факты живости — ни пользовательских данных, ни путей, ни версий.
+
+def _worker_limits() -> dict[str, int]:
+    """Имя воркера → предельный возраст отметки: три такта опроса плюс запас."""
+    c = _bot_config
+    return {
+        heartbeats.REMINDERS: c.REMINDER_POLL_SEC * 3 + 60,
+        heartbeats.DEADLINES: c.DEADLINE_POLL_SEC * 3 + 60,
+        heartbeats.CLASSES: c.CLASS_NOTIFY_POLL_SEC * 3 + 60,
+        heartbeats.SCHEDULE_RELOADER: c.SCHEDULE_RELOAD_POLL_SEC * 3 + 60,
+    }
+
+
+@app.route("/healthz")
+def healthz():
+    """200 — всё живо, 503 — что-то встало. В теле JSON с деталями по узлам."""
+    checks: dict[str, object] = {}
+    healthy = True
+
+    # Заодно подчищаем счётчики rate-limit: они живут в памяти этого процесса,
+    # растут по записи на каждый уникальный IP и больше ниоткуда не убираются.
+    # Монитор дёргает /healthz регулярно — удобная точка для такой уборки.
+    try:
+        panel_codes.cleanup_rate_limits()
+    except Exception:
+        logging.exception("healthz: не удалось почистить счётчики rate-limit")
+
+    try:
+        with _notes_conn() as conn:
+            conn.execute("SELECT 1").fetchone()
+        checks["db"] = "ok"
+    except Exception:
+        logging.exception("healthz: notes.db недоступна")
+        checks["db"] = "fail"
+        healthy = False
+
+    ticks = heartbeats.all_ticks()
+    workers: dict[str, object] = {}
+    for name, limit in _worker_limits().items():
+        age = heartbeats.age_seconds(ticks.get(name))
+        if age is None:
+            # Ни одной отметки: бот не запущен или поднялся только что.
+            workers[name] = {"state": "never", "limit_sec": limit}
+            healthy = False
+        elif age > limit:
+            workers[name] = {"state": "stale", "age_sec": int(age), "limit_sec": limit}
+            healthy = False
+        else:
+            workers[name] = {"state": "ok", "age_sec": int(age), "limit_sec": limit}
+    checks["workers"] = workers
+
+    return jsonify({"status": "ok" if healthy else "degraded", "checks": checks}), (
+        200 if healthy else 503
+    )
 
 
 # Remember-me — кука с долгоживущим токеном (1 год), авто-восстанавливает сессию
@@ -143,19 +244,70 @@ def _parse_owner_ids() -> set[int]:
 
 OWNER_VK_IDS: set[int] = _parse_owner_ids()
 
-NOTES_DB       = "notes.db"
-SCHEDULE_DB_S  = "s.db"
-SCHEDULE_DB_VK = "sсhedule.db"   # 'с' — кириллица, так в vk_bot.py
+
+def _assert_owner_exists() -> None:
+    """Панель без единого владельца неуправляема — падаем сразу, а не потом."""
+    if OWNER_VK_IDS:
+        return
+    try:
+        from vkbot.models import panel_users as _pu
+
+        if _pu.owner_ids():
+            return
+    except Exception:
+        logging.exception("Не удалось проверить владельцев в panel_users")
+    raise SystemExit(
+        "FATAL: не задан ни один владелец панели. "
+        "Укажите ADMIN_ID (или ADMIN_VK_IDS) в .env — иначе управлять админами будет некому."
+    )
+
+# Пути к БД берём из конфига пакета бота (импортирован выше): он собирает их
+# абсолютными от корня проекта. Относительные пути ломались, если сервис
+# стартовал не из корня — панель и бот открывали разные файлы notes.db.
+NOTES_DB       = _bot_config.NOTES_DB
+SCHEDULE_DB_VK = _bot_config.SCHEDULE_DB   # 'с' в имени файла — кириллица
+# База легаси Telegram-бота. Путь переопределяется так же, как остальные:
+# при другом DATA_DIR (тесты, dev-запуск) панель иначе писала бы в файл в
+# корне проекта мимо всех остальных баз.
+SCHEDULE_DB_S  = os.getenv("LEGACY_SCHEDULE_DB") or str(_bot_config.DATA_DIR / "s.db")
+
+
+# Схема БД создаётся здесь же: панель может быть поднята раньше бота, а таблицы
+# panel_login_codes / panel_remember_tokens нужны ей для самого логина.
+# vkbot.db.init() идемпотентен — безопасно вызывать на каждом старте.
+try:
+    from vkbot import db as _bot_db
+
+    _bot_db.init()
+except Exception:
+    logging.exception("Не удалось инициализировать схему БД при старте панели")
+
+_assert_owner_exists()
 
 
 # ── DB-хелперы ────────────────────────────────────────────────────────────────
 
+
+class _Conn(sqlite3.Connection):
+    """Соединение, которое на выходе из `with` не только коммитит, но и закрывается.
+
+    Штатный sqlite3.Connection.__exit__ управляет только транзакцией, поэтому
+    `with sqlite3.connect(...) as conn:` оставлял открытый дескриптор до GC.
+    """
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            return super().__exit__(exc_type, exc, tb)
+        finally:
+            self.close()
+
+
 def _notes_conn():
-    return sqlite3.connect(NOTES_DB)
+    return sqlite3.connect(NOTES_DB, factory=_Conn)
 
 
 def _sched_conn(vk: bool = True):
-    return sqlite3.connect(SCHEDULE_DB_VK if vk else SCHEDULE_DB_S)
+    return sqlite3.connect(SCHEDULE_DB_VK if vk else SCHEDULE_DB_S, factory=_Conn)
 
 
 # ── Авторизация и роли ────────────────────────────────────────────────────────
@@ -167,8 +319,22 @@ def _sched_conn(vk: bool = True):
 # кешей в session.
 
 
+def _db_owner_ids() -> set[int]:
+    """Владельцы, выданные через панель (panel_users.role='owner')."""
+    try:
+        return panel_users.owner_ids()
+    except Exception:
+        logging.exception("Не удалось прочитать владельцев из panel_users")
+        return set()
+
+
+def _all_owner_ids() -> set[int]:
+    """Полный состав владельцев: несменяемые из env плюс выданные в панели."""
+    return OWNER_VK_IDS | _db_owner_ids()
+
+
 def _is_owner(uid: int | None) -> bool:
-    return uid is not None and uid in OWNER_VK_IDS
+    return uid is not None and uid in _all_owner_ids()
 
 
 def _is_admin(uid: int | None) -> bool:
@@ -316,12 +482,16 @@ def _get_stats() -> dict:
         "recent_users": [],         # [(uid, last_seen, kind), ...]
     }
     for key, vk in (("schedule_vk", True), ("schedule_s", False)):
+        c = None
         try:
             c = _sched_conn(vk)
             stats[key] = c.execute("SELECT COUNT(*) FROM schedule").fetchone()[0]
-            c.close()
         except Exception:
             pass
+        finally:
+            if c is not None:
+                c.close()
+    conn = None
     try:
         conn = _notes_conn()
         uids: set = set()
@@ -377,7 +547,7 @@ def _get_stats() -> dict:
         try:
             rows = conn.execute(
                 "SELECT user_id, MAX(ts) AS last_seen, kind FROM ("
-                "  SELECT user_id, created_at AS ts, 'note' AS kind FROM notes "
+                "  SELECT user_id, timestamp AS ts, 'note' AS kind FROM notes "
                 "  UNION ALL "
                 "  SELECT user_id, remind_at AS ts, 'reminder' AS kind FROM reminders "
                 "  UNION ALL "
@@ -387,10 +557,14 @@ def _get_stats() -> dict:
             stats["recent_users"] = rows
         except Exception:
             pass
-        conn.close()
     except Exception:
         pass
+    finally:
+        if conn is not None:
+            conn.close()
     # Распределение по курсам: пары (количество_подписок, направлений, записей)
+    conn = None
+    sc = None
     try:
         conn = _notes_conn()
         subs_by_course: dict[int, int] = {}
@@ -402,19 +576,21 @@ def _get_stats() -> dict:
                 subs_by_course[c] = n
         except Exception:
             pass
-        conn.close()
         sc = _sched_conn(vk=True)
         course_rows = sc.execute(
             "SELECT course, COUNT(DISTINCT direction) AS dirs, COUNT(*) AS rows "
             "FROM schedule GROUP BY course ORDER BY course"
         ).fetchall()
-        sc.close()
         stats["courses_distribution"] = [
             (c, subs_by_course.get(c, 0), dirs, rows)
             for (c, dirs, rows) in course_rows
         ]
     except Exception:
         pass
+    finally:
+        for handle in (conn, sc):
+            if handle is not None:
+                handle.close()
     return stats
 
 
@@ -423,6 +599,7 @@ def _get_user_data(uid: int) -> dict:
         "notes": [], "reminders": [], "reminders_past": [],
         "deadlines": [], "subscriptions": [], "pref": None,
     }
+    conn = None
     try:
         conn = _notes_conn()
         data["notes"] = conn.execute(
@@ -453,9 +630,11 @@ def _get_user_data(uid: int) -> dict:
             "SELECT course, direction FROM user_prefs WHERE user_id=?",
             (uid,),
         ).fetchone()
-        conn.close()
     except Exception:
         pass
+    finally:
+        if conn is not None:
+            conn.close()
     return data
 
 
@@ -1125,9 +1304,12 @@ _BASE_TPL = """
       {% elif is_admin %}<span class="role-pill admin">admin</span>
       {% else %}<span class="role-pill user">user</span>{% endif %}
     </div>
-    <a href="{{ url_for('logout') }}" class="sb-logout">
-      <span>🚪</span><span class="sb-logout-label">Выйти</span>
-    </a>
+    <form method="post" action="{{ url_for('logout') }}" style="margin:0;">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button type="submit" class="sb-logout" style="border:0;background:none;width:100%;cursor:pointer;font:inherit;">
+        <span>🚪</span><span class="sb-logout-label">Выйти</span>
+      </button>
+    </form>
   </div>
 {% endmacro %}
 
@@ -2541,13 +2723,14 @@ def terms():
 
 
 def _client_ip() -> str:
-    """IP клиента из X-Real-IP (nginx) или X-Forwarded-For, fallback на remote_addr."""
-    return (
-        request.headers.get("X-Real-IP")
-        or (request.headers.get("X-Forwarded-For", "").split(",")[0].strip())
-        or request.remote_addr
-        or ""
-    )
+    """IP клиента для rate-limit и аудита.
+
+    Заголовкам X-Real-IP / X-Forwarded-For верим ТОЛЬКО если объявлено, что
+    перед приложением стоит прокси (PANEL_TRUSTED_PROXIES > 0). Иначе любой
+    запрос мог бы подменить свой IP и обнулить per-IP лимит на /login/code.
+    ProxyFix уже подставил доверенное значение в remote_addr.
+    """
+    return request.remote_addr or ""
 
 
 @app.route("/login/code", methods=["POST"])
@@ -2579,8 +2762,10 @@ def login_code():
     audit.log(uid, "auth.login", f"id{uid}", "via OTP code")
     remember = (request.form.get("remember", "1") == "1")
     resp = redirect(url_for("dashboard"))
-    # Flask-сессия — для первого редиректа (кука ещё не вернётся обратно)
-    session.permanent = True
+    # Flask-сессия — для первого редиректа (кука ещё не вернётся обратно).
+    # permanent только при «запомнить меня»: иначе сессия живёт до закрытия
+    # браузера, как пользователь и просил.
+    session.permanent = bool(remember)
     session["logged_in"] = True
     session["vk_id"] = uid
     if remember:
@@ -2589,7 +2774,7 @@ def login_code():
     return resp
 
 
-@app.route("/logout")
+@app.route("/logout", methods=["POST"])
 def logout():
     """Отзывает RM-токен этого устройства, чистит куку и Flask-сессию."""
     token = request.cookies.get(_REMEMBER_COOKIE)
@@ -2641,6 +2826,7 @@ def _today_tomorrow_preview(course: int | None = None, direction: str | None = N
     if direction:
         extra_conds += " AND direction = ?"
         extra_params.append(direction)
+    conn = None
     try:
         conn = _sched_conn(vk=True)
         for key, d in (("today", today_d), ("tomorrow", tomorrow_d)):
@@ -2659,12 +2845,14 @@ def _today_tomorrow_preview(course: int | None = None, direction: str | None = N
                 (day_name, wk, *extra_params),
             ).fetchall()
             out[key] = {"day": day_name, "week": wk, "rows": rows, "is_sunday": False, "date": d.isoformat()}
-        conn.close()
     except Exception:
         out = {
             "today": {"day": "", "week": "", "rows": [], "is_sunday": False, "date": ""},
             "tomorrow": {"day": "", "week": "", "rows": [], "is_sunday": False, "date": ""},
         }
+    finally:
+        if conn is not None:
+            conn.close()
     return out
 
 
@@ -2760,7 +2948,7 @@ def me_subscribe():
     uid = _current_vk_id()
     course = (request.form.get("course") or "").strip()
     direction = (request.form.get("direction") or "").strip()
-    next_url = request.form.get("next") or url_for("dashboard")
+    next_url = _safe_next(request.form.get("next"), url_for("dashboard"))
     if uid and course.isdigit() and direction:
         try:
             _set_pref(uid, int(course), direction)
@@ -2773,7 +2961,7 @@ def me_subscribe():
 @login_required
 def me_unsubscribe():
     uid = _current_vk_id()
-    next_url = request.form.get("next") or url_for("dashboard")
+    next_url = _safe_next(request.form.get("next"), url_for("dashboard"))
     if uid:
         try:
             _clear_pref(uid)
@@ -2864,7 +3052,8 @@ def _validate_excel_upload(f) -> str:
         return "Файл не похож на Excel (неверный заголовок)."
     # Для zip-формата проверяем, что это реально Office Open XML, а не
     # произвольный zip-архив с .xlsx-расширением.
-    import zipfile, io
+    import zipfile
+    import io
     try:
         data = f.stream.read()
         f.stream.seek(0)
@@ -2905,7 +3094,7 @@ def upload_page():
                 pending_token = secrets.token_urlsafe(16)
                 _add_pending(pending_token, tmp_path, f.filename)
             except Exception:
-                import logging; logging.exception("upload preview failed")
+                logging.exception("upload preview failed")
                 error = "Не удалось обработать файл (см. логи сервиса)."
     return _render_page(
         "Загрузить расписание",
@@ -2916,6 +3105,21 @@ def upload_page():
         versions=schedule_loader.list_versions()[:10],
         subscriber_count=_subscriber_count(),
     )
+
+
+def _sync_legacy_schedule_db(excel_path: str, context: str) -> None:
+    """Переливает то же расписание в s.db — базу легаси Telegram-бота.
+
+    Ошибки только логируем: VK-бот и панель читают свою базу, расхождение с
+    легаси-ботом не повод валить загрузку. Вызывать нужно из ВСЕХ путей, где
+    расписание меняется (панель и API, загрузка и откат), иначе базы разъедутся.
+    """
+    try:
+        from import_excel import import_schedule
+
+        import_schedule(excel_path, SCHEDULE_DB_S)
+    except Exception:
+        logging.exception("Не удалось обновить s.db (%s)", context)
 
 
 @app.route("/upload/commit", methods=["POST"])
@@ -2936,12 +3140,7 @@ def upload_commit():
             original or "—",
             f"rows={result.get('row_count', '?')}, notify={'yes' if notify else 'no'}",
         )
-        # Также синхронно перезаписать s.db (Telegram-бот)
-        try:
-            from import_excel import import_schedule
-            import_schedule(excel_path, SCHEDULE_DB_S)
-        except Exception:
-            logging.exception("Не удалось обновить s.db (Telegram-бот) после загрузки")
+        _sync_legacy_schedule_db(excel_path, "загрузка из панели")
         # Рассылка подписчикам (опционально) — в фоне, чтобы не держать запрос.
         if notify:
             uids = notifier.subscribed_uids()
@@ -2950,11 +3149,12 @@ def upload_commit():
             else:
                 result["broadcast"] = {"started": False, "total": len(uids)}
     except Exception:
+        logging.exception("schedule commit failed")
         return _render_page(
             "Загрузить расписание",
             _UPLOAD_CONTENT,
             preview=None,
-            error=traceback.format_exc(),
+            error="Не удалось применить расписание — подробности в логах сервиса.",
             pending_token=None,
             versions=schedule_loader.list_versions()[:10],
             subscriber_count=_subscriber_count(),
@@ -3024,16 +3224,24 @@ def upload_cancel():
 @admin_required
 def upload_rollback(version_id: int):
     try:
-        schedule_loader.rollback(version_id, uploaded_by=f"admin:{_current_vk_id() or 'password'}")
+        result = schedule_loader.rollback(
+            version_id, uploaded_by=f"admin:{_current_vk_id() or 'password'}"
+        )
         _ics_cache_clear()
+        audit.log(_current_vk_id(), "schedule.rollback", f"version={version_id}", "")
+        # rollback() возвращает свежую копию того же Excel — из неё и обновляем
+        # s.db (легаси Telegram-бот), иначе базы разъедутся.
+        _sync_legacy_schedule_db(result["saved_path"], "откат из панели")
     except Exception:
+        logging.exception("schedule rollback failed")
         return _render_page(
             "Загрузить расписание",
             _UPLOAD_CONTENT,
             preview=None,
-            error=traceback.format_exc(),
+            error="Не удалось откатить расписание — подробности в логах сервиса.",
             pending_token=None,
             versions=schedule_loader.list_versions()[:10],
+            subscriber_count=_subscriber_count(),
         )
     return redirect(url_for("upload_page"))
 
@@ -3075,8 +3283,8 @@ def api_schedule_upload():
         token = secrets.token_urlsafe(16)
         _add_pending(token, tmp_path, f.filename)
         return jsonify({"token": token, "preview": pv.__dict__})
-    except Exception as e:
-        import logging; logging.exception("api upload failed")
+    except Exception:
+        logging.exception("api upload failed")
         return jsonify({"error": "internal error"}), 500
 
 
@@ -3093,14 +3301,18 @@ def api_schedule_commit():
     try:
         result = schedule_loader.commit(excel_path, "api", original)
         _ics_cache_clear()
-        try:
-            from import_excel import import_schedule
-            import_schedule(excel_path, SCHEDULE_DB_S)
-        except Exception:
-            logging.exception("Не удалось обновить s.db (Telegram-бот) через API")
+        # Аудит нужен и здесь: иначе загрузка через API — единственный способ
+        # подменить расписание, не оставив следа в /admin/audit.
+        audit.log(
+            None, "schedule.upload", original or "—",
+            f"rows={result.get('row_count', '?')}, via=api",
+        )
+        _sync_legacy_schedule_db(excel_path, "загрузка через API")
         return jsonify(result)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        # Текст исключения наружу не отдаём: в нём бывают пути и SQL.
+        logging.exception("api schedule commit failed")
+        return jsonify({"error": "internal error"}), 500
     finally:
         _drop_pending(token or "")
 
@@ -3117,12 +3329,23 @@ def api_schedule_versions():
 def api_schedule_rollback(version_id: int):
     if not _check_api_token():
         return jsonify({"error": "unauthorized"}), 401
+    # Проверяем существование версии отдельно: если ловить ValueError вокруг
+    # всего rollback(), под 404 «version not found» уедет и ошибка разбора
+    # Excel внутри commit() — да ещё и без записи в лог.
+    version = next(
+        (v for v in schedule_loader.list_versions() if v["id"] == version_id), None
+    )
+    if version is None or not Path(version["file_path"]).exists():
+        return jsonify({"error": "version not found"}), 404
     try:
         result = schedule_loader.rollback(version_id, uploaded_by="api")
-        _ics_cache_clear()
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        logging.exception("api schedule rollback failed")
+        return jsonify({"error": "internal error"}), 500
+    _ics_cache_clear()
+    audit.log(None, "schedule.rollback", f"version={version_id}", "via=api")
+    _sync_legacy_schedule_db(result["saved_path"], "откат через API")
+    return jsonify(result)
 
 
 _WEEKDAY_RU = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
@@ -3178,6 +3401,7 @@ def schedule_page():
     teachers: list[str] = []
     types: list[str] = []
     rooms: list[str] = []
+    conn = None
     try:
         conn = _sched_conn(vk=True)
         courses = [
@@ -3262,9 +3486,11 @@ def schedule_page():
         # Стабильная сортировка: курс → направление → день (Пн-Сб) → время
         sql += f" ORDER BY course, direction, {_DAY_ORDER_SQL}, time"
         rows = conn.execute(sql, params).fetchall()
-        conn.close()
     except Exception:
         pass
+    finally:
+        if conn is not None:
+            conn.close()
     return _render_page(
         "Расписание", _SCHEDULE_CONTENT,
         courses=courses, rows=rows, total=total,
@@ -3336,6 +3562,7 @@ def me_delete():
 def _aggregate_users(search: str = "") -> list[dict]:
     """Собирает всех пользователей бота из всех таблиц + статистика."""
     users: dict[int, dict] = {}
+    conn = None
     try:
         conn = _notes_conn()
         # notes
@@ -3382,9 +3609,11 @@ def _aggregate_users(search: str = "") -> list[dict]:
                 u.setdefault("first_seen", first_seen)
         except Exception:
             pass
-        conn.close()
     except Exception:
         pass
+    finally:
+        if conn is not None:
+            conn.close()
 
     if not users:
         return []
@@ -3397,6 +3626,7 @@ def _aggregate_users(search: str = "") -> list[dict]:
         admin_ids = {u["vk_id"] for u in panel_users.list_all()}
     except Exception:
         pass
+    owner_ids = _all_owner_ids()
 
     out: list[dict] = []
     s = search.strip().lower()
@@ -3407,7 +3637,7 @@ def _aggregate_users(search: str = "") -> list[dict]:
             if s not in str(uid) and s not in name.lower():
                 continue
         u["name"] = name
-        if uid in OWNER_VK_IDS:
+        if uid in owner_ids:
             u["role"] = "owner"
         elif uid in admin_ids:
             u["role"] = "admin"
@@ -3567,6 +3797,36 @@ _ADMINS_CONTENT = """
   </div>
 </div>
 
+<div class="card mb-4 border-danger-subtle">
+  <div class="card-header fw-semibold">👑 Передать владение</div>
+  <div class="card-body">
+    <form method="post" action="{{ url_for('owner_grant') }}" class="row g-2 align-items-center">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="col-sm-7 col-md-5">
+        <input type="text" name="query" class="form-control" required autocomplete="off"
+               list="grantUsers" placeholder="VK ID, vk.com/id…, или имя из бота">
+      </div>
+      <div class="col-auto">
+        <input type="text" name="code" class="form-control" required
+               inputmode="numeric" pattern="[0-9]*" maxlength="6" minlength="6"
+               autocomplete="off" placeholder="код из бота" style="max-width:11rem;">
+      </div>
+      <div class="col-auto">
+        <button class="btn btn-danger">👑 Передать владение</button>
+      </div>
+    </form>
+    <div class="form-text small mt-2">
+      Владелец может всё, включая выдачу и снятие админов и владельцев.
+      Операция подтверждается одноразовым кодом: запросите его в боте
+      («🔑 Войти в панель») и введите сюда — украденной сессии кода не хватит.
+      <br>
+      Ваше собственное владение задано в <code>.env</code> и через панель не снимается:
+      что бы ни произошло здесь, доступ у вас остаётся. Полностью уйти можно, выдав
+      владение преемнику и убрав себя из <code>.env</code> на сервере.
+    </div>
+  </div>
+</div>
+
 <div class="card">
   <div class="card-header fw-semibold d-flex justify-content-between">
     <span>Текущие админы</span>
@@ -3593,8 +3853,24 @@ _ADMINS_CONTENT = """
             </td>
             <td class="d-none d-sm-table-cell text-muted small">{{ o.vk_id }}</td>
             <td><span class="badge bg-danger">owner</span></td>
-            <td class="d-none d-md-table-cell text-muted small">из .env</td>
-            <td class="text-end text-muted small">не удаляется</td>
+            <td class="d-none d-md-table-cell text-muted small">
+              {% if o.source == 'env' %}из .env{% else %}выдан в панели{% endif %}
+            </td>
+            <td class="text-end">
+              {% if o.source == 'env' %}
+                <span class="text-muted small">снимается на сервере</span>
+              {% else %}
+                <form method="post" action="{{ url_for('owner_revoke') }}"
+                      class="d-inline-flex gap-1 align-items-center justify-content-end">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <input type="hidden" name="vk_id" value="{{ o.vk_id }}">
+                  <input type="text" name="code" required class="form-control form-control-sm"
+                         inputmode="numeric" pattern="[0-9]*" maxlength="6" minlength="6"
+                         autocomplete="off" placeholder="код" style="max-width:6.5rem;">
+                  <button class="btn btn-sm btn-outline-danger">👑 Снять владение</button>
+                </form>
+              {% endif %}
+            </td>
           </tr>
           {% endfor %}
           {% for a in admins %}
@@ -3628,15 +3904,21 @@ _ADMINS_CONTENT = """
 @owner_required
 def admins_page():
     raw = panel_users.list_all()
+    db_owners = _db_owner_ids()
     all_ids = {a["vk_id"] for a in raw} | OWNER_VK_IDS
     names = vk_names.resolve(all_ids)
     admins = []
     for a in raw:
-        if a["vk_id"] in OWNER_VK_IDS:
+        # Владельцы (и из env, и выданные в панели) идут отдельным блоком выше.
+        if a["vk_id"] in OWNER_VK_IDS or a["vk_id"] in db_owners:
             continue
         admins.append({**a, "name": names.get(a["vk_id"], a.get("name") or f"id{a['vk_id']}")})
     owners = [
-        {"vk_id": uid, "name": names.get(uid, f"id{uid}")} for uid in sorted(OWNER_VK_IDS)
+        {"vk_id": uid, "name": names.get(uid, f"id{uid}"), "source": "env"}
+        for uid in sorted(OWNER_VK_IDS)
+    ] + [
+        {"vk_id": uid, "name": names.get(uid, f"id{uid}"), "source": "panel"}
+        for uid in sorted(db_owners - OWNER_VK_IDS)
     ]
     # Для datalist автодополнения — все юзеры бота с ролями
     try:
@@ -3703,7 +3985,7 @@ def _resolve_grant_target(raw: str) -> tuple[int | None, str, str | None]:
 @app.route("/admin/grant", methods=["POST"])
 @owner_required
 def admin_grant():
-    next_url = request.form.get("next") or url_for("admins_page")
+    next_url = _safe_next(request.form.get("next"), url_for("admins_page"))
     raw_vk = (request.form.get("vk_id") or "").strip()
     raw_query = (request.form.get("query") or "").strip()  # объединённое поле «ID или имя»
 
@@ -3721,8 +4003,8 @@ def admin_grant():
             return redirect(_with_flash(next_url, "Некорректный VK ID", "danger"))
         name = (request.form.get("name") or vk_names.resolve_one(vk_id)).strip()
 
-    if vk_id in OWNER_VK_IDS:
-        return redirect(_with_flash(next_url, "Owner уже имеет все права.", "info"))
+    if vk_id in _all_owner_ids():
+        return redirect(_with_flash(next_url, "Владелец уже имеет все права.", "info"))
     panel_users.grant(vk_id, granted_by=_current_vk_id() or 0, name=name)
     audit.log(_current_vk_id(), "admin.grant", f"id{vk_id}", name)
     return redirect(_with_flash(next_url, f"✅ {name} (id{vk_id}) теперь админ", "success"))
@@ -3731,17 +4013,164 @@ def admin_grant():
 @app.route("/admin/revoke", methods=["POST"])
 @owner_required
 def admin_revoke():
-    next_url = request.form.get("next") or url_for("admins_page")
+    next_url = _safe_next(request.form.get("next"), url_for("admins_page"))
     try:
         vk_id = int(request.form.get("vk_id") or 0)
     except (TypeError, ValueError):
         return redirect(_with_flash(next_url, "Некорректный VK ID", "danger"))
     if vk_id in OWNER_VK_IDS:
-        return redirect(_with_flash(next_url, "Owner не может быть снят.", "danger"))
+        return redirect(
+            _with_flash(next_url, "Владелец из .env снимается только на сервере.", "danger")
+        )
+    if vk_id in _db_owner_ids():
+        return redirect(
+            _with_flash(next_url, "Сначала снимите владение, потом права админа.", "danger")
+        )
     panel_users.revoke(vk_id)
     name = vk_names.resolve_one(vk_id)
     audit.log(_current_vk_id(), "admin.revoke", f"id{vk_id}", name)
     return redirect(_with_flash(next_url, f"✖ {name} (id{vk_id}) снят с админов", "success"))
+
+
+# ── Владение панелью ──────────────────────────────────────────────────────────
+#
+# Владельцы бывают двух видов и это принципиально:
+#   * из env — несменяемый якорь, снимается только на сервере;
+#   * из panel_users (role='owner') — выдаётся и снимается здесь.
+# Угнанная сессия поэтому не может разжаловать владельца из .env: максимум —
+# добавить совладельца, что видно в аудите, уходит уведомлением в VK всем
+# владельцам и снимается одной кнопкой.
+#
+# Любая операция с владением требует step-up: свежего одноразового кода из бота.
+# Кука без доступа к VK-аккаунту такую операцию не проведёт.
+
+
+def _step_up_error(actor_uid: int) -> str | None:
+    """Проверяет код подтверждения. Возвращает текст ошибки или None, если всё чисто."""
+    code = (request.form.get("code") or "").strip()
+    ip = _client_ip()
+    if not code:
+        return "Нужен код из бота: операции с владением подтверждаются отдельно."
+    if panel_codes.is_globally_locked() or panel_codes.is_rate_limited(ip):
+        audit.log(actor_uid, "auth.step_up_rate_limited", ip, "")
+        return "Слишком много неудачных попыток. Подождите 10 минут."
+    verified = panel_codes.verify(code)
+    if verified is None:
+        panel_codes.record_failure(ip)
+        return "Код неверен или истёк. Запросите новый в боте: «🔑 Войти в панель»."
+    if verified != actor_uid:
+        # Код чужого аккаунта — либо ошибка, либо попытка обойти подтверждение.
+        panel_codes.record_failure(ip)
+        audit.log(actor_uid, "auth.step_up_foreign_code", f"id{verified}", "")
+        return "Этот код выдан другому аккаунту."
+    return None
+
+
+def _notify_owners(text: str) -> None:
+    """Сообщает всем владельцам об изменении состава. Тихо не передаём владение."""
+    if not _bot_config.VK_TOKEN:
+        return
+    try:
+        import itertools as _it
+
+        counter = _it.count()
+        for uid in sorted(_all_owner_ids()):
+            notifier.send_one(uid, text, counter)
+    except Exception:
+        logging.exception("Не удалось уведомить владельцев об изменении прав")
+
+
+@app.route("/admin/owner/grant", methods=["POST"])
+@owner_required
+def owner_grant():
+    """Выдаёт владение: получатель получает всё, включая управление админами."""
+    next_url = _safe_next(request.form.get("next"), url_for("admins_page"))
+    actor = _current_vk_id() or 0
+
+    # Получателя разбираем ДО проверки кода: код одноразовый, и опечатка в имени
+    # не должна его сжигать — иначе за каждую опечатку идёшь в бота за новым.
+    vk_id, name, resolve_err = _resolve_grant_target(request.form.get("query") or "")
+    if resolve_err or vk_id is None:
+        return redirect(
+            _with_flash(next_url, resolve_err or "Не удалось распознать получателя", "danger")
+        )
+    if vk_id in OWNER_VK_IDS:
+        return redirect(_with_flash(next_url, "Это владелец из .env, у него уже всё есть.", "info"))
+    if vk_id in _db_owner_ids():
+        return redirect(_with_flash(next_url, f"{name} уже владелец.", "info"))
+
+    err = _step_up_error(actor)
+    if err:
+        return redirect(_with_flash(next_url, err, "danger"))
+
+    panel_users.grant(vk_id, granted_by=actor, name=name, role=panel_users.ROLE_OWNER)
+    audit.log(actor, "admin.owner_grant", f"id{vk_id}", name)
+    _notify_owners(
+        f"🔐 Панель: id{actor} передал владение пользователю {name} (id{vk_id}).\n"
+        f"Если это не вы — снимите владение на странице «Управление админами»."
+    )
+    return redirect(_with_flash(next_url, f"👑 {name} (id{vk_id}) теперь владелец", "success"))
+
+
+@app.route("/admin/owner/revoke", methods=["POST"])
+@owner_required
+def owner_revoke():
+    """Снимает владение, оставляя админку: разжалование не должно запирать людей."""
+    next_url = _safe_next(request.form.get("next"), url_for("admins_page"))
+    actor = _current_vk_id() or 0
+
+    try:
+        vk_id = int(request.form.get("vk_id") or 0)
+    except (TypeError, ValueError):
+        return redirect(_with_flash(next_url, "Некорректный VK ID", "danger"))
+
+    if vk_id in OWNER_VK_IDS:
+        return redirect(
+            _with_flash(
+                next_url,
+                "Владелец из .env снимается только на сервере: правка .env и рестарт панели.",
+                "danger",
+            )
+        )
+    if vk_id not in _db_owner_ids():
+        return redirect(_with_flash(next_url, "Этот пользователь не владелец.", "info"))
+    if len(_all_owner_ids()) <= 1:
+        return redirect(
+            _with_flash(next_url, "Нельзя снять последнего владельца панели.", "danger")
+        )
+
+    err = _step_up_error(actor)
+    if err:
+        return redirect(_with_flash(next_url, err, "danger"))
+
+    panel_users.set_role(vk_id, panel_users.ROLE_ADMIN)
+    name = vk_names.resolve_one(vk_id)
+    audit.log(actor, "admin.owner_revoke", f"id{vk_id}", name)
+    _notify_owners(f"🔐 Панель: id{actor} снял владение с {name} (id{vk_id}). Права админа сохранены.")
+    return redirect(
+        _with_flash(next_url, f"👑→🛡️ {name} (id{vk_id}) снова просто админ", "success")
+    )
+
+
+def _safe_next(raw: str | None, fallback: str) -> str:
+    """Разрешает только локальные пути — защита от открытого редиректа.
+
+    Значение приходит из формы (поле `next`), поэтому абсолютный URL, схему и
+    protocol-relative (`//evil.com`) отбрасываем. Обратный слэш режем тоже:
+    браузеры нормализуют его в прямой, поэтому `/\\evil.com` уезжает на чужой
+    домен, хотя по виду это локальный путь.
+    """
+    candidate = (raw or "").strip()
+    if "\\" in candidate:
+        return fallback
+    if not candidate.startswith("/") or candidate.startswith("//"):
+        return fallback
+    from urllib.parse import urlparse
+
+    parts = urlparse(candidate)
+    if parts.scheme or parts.netloc:
+        return fallback
+    return candidate
 
 
 def _with_flash(url: str, msg: str, kind: str = "success") -> str:
@@ -3901,6 +4330,7 @@ def _versions_for_diff() -> list[dict]:
 def _read_schedule_from_excel(path: str) -> set[tuple]:
     """Превращает Excel-файл версии в множество кортежей-«ключей пары» для сравнения."""
     try:
+        from contextlib import closing
         from import_excel import import_schedule
         import tempfile
         import sqlite3 as _sql
@@ -3909,7 +4339,10 @@ def _read_schedule_from_excel(path: str) -> set[tuple]:
             tmp_db = tmp.name
         try:
             import_schedule(path, tmp_db)
-            with _sql.connect(tmp_db) as conn:
+            # closing() обязателен: sqlite3.Connection.__exit__ закрывает только
+            # транзакцию, а с живым дескриптором os.unlink ниже на Windows молча
+            # не срабатывает и временные БД копятся.
+            with closing(_sql.connect(tmp_db)) as conn:
                 return set(conn.execute(
                     "SELECT course, direction, day, time, subject, teacher, "
                     "room, week, class_type FROM schedule"
@@ -3918,7 +4351,7 @@ def _read_schedule_from_excel(path: str) -> set[tuple]:
             try:
                 os.unlink(tmp_db)
             except Exception:
-                pass
+                logging.warning("Не удалось удалить временную БД диффа %s", tmp_db)
     except Exception:
         return set()
 
@@ -4669,13 +5102,37 @@ def broadcast_send():
 
 # ── Запуск ────────────────────────────────────────────────────────────────────
 
+# ВАЖНО про масштабирование: _PENDING_UPLOADS, _LAST_BROADCAST и _ICS_CACHE —
+# состояние в памяти процесса. Панель обязана работать РОВНО В ОДНОМ воркере,
+# иначе загрузка расписания будет падать с «unknown or expired token», а
+# прогресс рассылки — прыгать. Нужно масштабировать — сначала вынести это
+# состояние в БД/Redis.
+
+def _run_server(host: str, port: int, *, dev: bool = False) -> None:
+    if dev:
+        print(f"[dev] Панель запущена: http://{host}:{port}/")
+        app.run(host=host, port=port, debug=False)
+        return
+    try:
+        from waitress import serve
+    except ImportError:
+        print(
+            "waitress не установлен (pip install waitress) — "
+            "поднимаю dev-сервер Werkzeug, для прода так нельзя.",
+            file=sys.stderr,
+        )
+        app.run(host=host, port=port, debug=False)
+        return
+    print(f"Панель запущена: http://{host}:{port}/ (waitress, 1 процесс)")
+    serve(app, host=host, port=port, threads=8, ident="panel")
+
+
 if __name__ == "__main__":
-    port = 5000
+    port = _bot_config.int_env("PANEL_PORT", 5000)
     if "--port" in sys.argv:
         try:
             port = int(sys.argv[sys.argv.index("--port") + 1])
         except (ValueError, IndexError):
             pass
     host = os.getenv("PANEL_HOST", "127.0.0.1")
-    print(f"Панель запущена: http://{host}:{port}/")
-    app.run(host=host, port=port, debug=False)
+    _run_server(host, port, dev="--dev" in sys.argv)
