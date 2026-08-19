@@ -40,13 +40,28 @@ def _make_db(path: Path, rows: int = 3) -> None:
     conn.close()
 
 
+# conftest.py уводит базы приложения во временный каталог через эти переменные.
+# Скрипт читает их же — и без очистки бэкапил базы тестового окружения вместо
+# тех, что создал тест. Ошибка ровно того сорта, который скрипт и ловит: копия
+# создаётся, «проверка ok», а внутри не те данные.
+_INHERITED_DB_VARS = (
+    "DATA_DIR", "NOTES_DB", "SCHEDULE_DB", "LEGACY_SCHEDULE_DB",
+    "SCHEDULE_VERSIONS_DIR", "BACKUP_DIR", "BACKUP_KEEP_DAYS",
+)
+
+
+def _clean_env(**extra) -> dict[str, str]:
+    env = {k: v for k, v in os.environ.items() if k not in _INHERITED_DB_VARS}
+    env.update(extra)
+    return env
+
+
 def _run(project: Path, dest: Path, **env_extra) -> subprocess.CompletedProcess:
-    env = {
-        **os.environ,
-        "PROJECT_DIR": str(project),
-        "PYTHON": sys.executable,
+    env = _clean_env(
+        PROJECT_DIR=str(project),
+        PYTHON=sys.executable,
         **env_extra,
-    }
+    )
     return subprocess.run(
         [bash, str(SCRIPT), str(dest)],
         capture_output=True, text=True, env=env, timeout=120,
@@ -83,9 +98,12 @@ def test_backup_copies_are_readable(project: Path, tmp_path: Path):
     _run(project, dest)
 
     copy = next(dest.iterdir()) / "notes.db"
+    assert copy.exists(), "копии notes.db нет — sqlite3.connect создал бы пустышку"
     conn = sqlite3.connect(copy)
     assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
-    assert conn.execute("SELECT COUNT(*) FROM t").fetchone()[0] == 3
+    assert conn.execute("SELECT COUNT(*) FROM t").fetchone()[0] == 3, (
+        "в копии не те данные: похоже, бэкап взял базу из чужого окружения"
+    )
     conn.close()
 
 
@@ -108,8 +126,8 @@ def test_backup_honours_data_dir_override(tmp_path: Path):
 def test_backup_finds_interpreter_without_explicit_python(project: Path, tmp_path: Path):
     """PYTHON не задан: скрипт должен сам найти .venv, venv или python3."""
     dest = tmp_path / "out"
-    env = {k: v for k, v in os.environ.items() if k != "PYTHON"}
-    env["PROJECT_DIR"] = str(project)
+    env = _clean_env(PROJECT_DIR=str(project))
+    env.pop("PYTHON", None)
 
     result = subprocess.run(
         [bash, str(SCRIPT), str(dest)],
