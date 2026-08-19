@@ -1,5 +1,17 @@
+# Секреты и данные
 .env
 *.db
+*.db-wal
+*.db-shm
+
+# Артефакты работы панели
+schedule_versions/
+.schedule_reload
+demo_schedule.xlsx
+shots/
+
+# Python
 __pycache__/
 *.pyc
 .venv/
+.pytest_cache/

@@ -1,0 +1,10 @@
+# Легаси Telegram-бот (bot.py). Новый функционал туда не добавляется — вся
+# разработка идёт в пакете vkbot/. Ставить только если этот процесс реально нужен.
+#
+#   pip install -r requirements-legacy.txt
+
+-r requirements.txt
+
+aiogram>=3.20,<4
+openai>=1.40             # режим «Настройки GPT»: ключ вводит сам пользователь
+aiohttp-socks>=0.9       # SOCKS5-прокси из PROXY_LIST в bot.py

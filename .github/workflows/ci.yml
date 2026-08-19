@@ -1,0 +1,92 @@
+# Прогон на каждый push и pull request: линтер, тесты и сквозная проверка
+# панели настоящим браузером. Если что-то из этого красное — на сервер не едем.
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  lint:
+    name: Линтер
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff
+      - run: ruff check .
+
+  tests:
+    name: Тесты
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.10 — нижняя поддерживаемая граница (код на синтаксисе `X | None`),
+        # 3.12 — то, что стоит на сервере.
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Установка зависимостей
+        run: |
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio
+      - name: pytest
+        # Базы уезжают во временный каталог (см. tests/conftest.py), никаких
+        # секретов и сети не нужно: VK_TOKEN в тестах пустой.
+        run: pytest -q
+
+  smoke:
+    name: Сквозная проверка панели
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Установка зависимостей
+        run: |
+          pip install -r requirements-dev.txt
+          playwright install --with-deps chromium
+      - name: Демо-расписание
+        run: python tools/make_demo_schedule.py demo_schedule.xlsx
+      - name: Запуск панели
+        env:
+          DATA_DIR: /tmp/vkbot-smoke
+          PANEL_SECRET: ci-secret-not-for-production
+          ADMIN_ID: "1001"
+          UPLOAD_API_TOKEN: ci-token
+          PANEL_BASE_URL: http://127.0.0.1:5000
+          VK_TOKEN: ""
+        run: |
+          mkdir -p /tmp/vkbot-smoke
+          python web_panel.py > /tmp/panel.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf -o /dev/null http://127.0.0.1:5000/login && break
+            sleep 1
+          done
+      - name: Прогон браузером
+        env:
+          DATA_DIR: /tmp/vkbot-smoke
+          ADMIN_ID: "1001"
+          PANEL_SECRET: ci-secret-not-for-production
+          VK_TOKEN: ""
+        run: python tools/smoke_panel.py --excel demo_schedule.xlsx --shots /tmp/shots
+      - name: Лог панели при падении
+        if: failure()
+        run: cat /tmp/panel.log
+      - name: Скриншоты шагов
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-shots
+          path: /tmp/shots
+          if-no-files-found: ignore

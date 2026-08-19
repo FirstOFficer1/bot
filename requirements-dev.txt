@@ -1,0 +1,17 @@
+# Зависимости для разработки и проверок.
+#
+#   pip install -r requirements-dev.txt
+#   playwright install chromium        # один раз, для tools/smoke_panel.py
+#
+# Запуск:
+#   pytest -q                                   # юнит-тесты и тесты панели
+#   python tools/smoke_panel.py                 # сквозной прогон в браузере
+
+-r requirements.txt
+
+pytest>=8.0
+pytest-asyncio>=0.23     # асинхронные хендлеры бота в tests/test_handlers_dialogs.py
+playwright>=1.40         # браузерная smoke-проверка панели
+
+# Линтер — тот же, что гоняет CI (см. .github/workflows/ci.yml и ruff.toml)
+ruff>=0.6
