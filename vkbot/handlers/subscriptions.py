@@ -82,11 +82,11 @@ async def try_handle(_bot, message, state, text, uid) -> bool:
                 store[uid] = {"step": "sub_course"}
                 await message.answer("Выбери курс:", keyboard=_course_kb())
             return True
-        if text.isdigit():
+        if text.isdecimal():
             sub_map = state.get("sub_map", {})
             num = int(text)
             if str(num) in sub_map:
-                model.delete(sub_map[str(num)])
+                model.delete(sub_map[str(num)], uid)
                 store.pop(uid, None)
                 await message.answer(f"✅ Подписка [{num}] удалена.", keyboard=MAIN_KB)
             else:
@@ -138,7 +138,7 @@ async def try_handle(_bot, message, state, text, uid) -> bool:
             _reset_to_menu(uid)
             await message.answer("Управление подписками:", keyboard=_menu_kb())
             return True
-        if text.isdigit() and int(text) in repo.directions_by_course:
+        if text.isdecimal() and int(text) in repo.directions_by_course:
             store.patch(uid, step="sub_direction", course=int(text))
             await message.answer("Выбери направление:", keyboard=_direction_kb(int(text)))
             return True

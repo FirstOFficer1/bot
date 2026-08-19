@@ -84,7 +84,7 @@ async def try_handle(_bot, message, state, text, uid) -> bool:
         to_del_ids = [note_map[str(n)] for n in nums if str(n) in note_map]
         not_found = [n for n in nums if str(n) not in note_map]
         if to_del_ids:
-            model.delete(to_del_ids)
+            model.delete(to_del_ids, uid)
         resp_parts = []
         if to_del_ids:
             deleted_nums = ", ".join(str(n) for n in nums if str(n) in note_map)

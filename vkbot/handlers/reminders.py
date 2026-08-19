@@ -46,11 +46,11 @@ async def try_handle(_bot, message, state, text, uid) -> bool:
             store[uid] = {"step": "rem_text"}
             await message.answer("✏️ Введи текст напоминания:", keyboard=CANCEL_KB)
             return True
-        if text.isdigit():
+        if text.isdecimal():
             rem_map = state.get("rem_map", {})
             num = int(text)
             if str(num) in rem_map:
-                model.delete(rem_map[str(num)])
+                model.delete(rem_map[str(num)], uid)
                 store.pop(uid, None)
                 await message.answer(
                     f"✅ Напоминание [{num}] отменено.", keyboard=MAIN_KB
@@ -114,12 +114,13 @@ async def try_handle(_bot, message, state, text, uid) -> bool:
         if text == f"{MONTH_NAMES[month - 1]} {year}":
             await message.answer("📅 Выбери дату:", keyboard=calendar_kb(year, month, min_day))
             return True
-        if text.isdigit():
+        if text.isdecimal():
             import calendar as _cal
             day = int(text)
             _, days_in_month = _cal.monthrange(year, month)
-            selected = datetime.date(year, month, day)
-            if 1 <= day <= days_in_month and selected >= today:
+            # Проверяем диапазон ДО конструирования date(): '31' в 30-дневном
+            # месяце иначе бросает ValueError и диалог зависает без ответа.
+            if 1 <= day <= days_in_month and datetime.date(year, month, day) >= today:
                 date_str = f"{year:04d}-{month:02d}-{day:02d}"
                 store.patch(uid, step="rem_clock", date_str=date_str)
                 await message.answer(

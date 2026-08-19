@@ -23,9 +23,9 @@ def list_for(uid: int) -> list[tuple]:
         ).fetchall()
 
 
-def delete(did: int) -> None:
+def delete(did: int, uid: int) -> None:
     with connect() as conn:
-        conn.execute("DELETE FROM deadlines WHERE id=?", (did,))
+        conn.execute("DELETE FROM deadlines WHERE id=? AND user_id=?", (did, uid))
 
 
 def list_pending() -> list[tuple]:

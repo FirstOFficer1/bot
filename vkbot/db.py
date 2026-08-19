@@ -45,9 +45,14 @@ def init() -> None:
                 user_id INTEGER, course INTEGER, direction TEXT,
                 disabled INTEGER DEFAULT 0
             );
+            -- class_key — стабильный отпечаток пары (курс|направление|предмет|
+            -- аудитория). Раньше здесь был schedule_row_id, но переимпорт
+            -- расписания перезаписывает таблицу и раздаёт новые rowid, поэтому
+            -- загрузка в середине дня рассылала уведомления по второму разу.
             CREATE TABLE IF NOT EXISTS sent_class_notifications (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER, schedule_row_id INTEGER,
+                class_key TEXT,
                 class_date TEXT, class_time TEXT, sent_at TEXT
             );
             CREATE TABLE IF NOT EXISTS deadlines (
@@ -109,12 +114,19 @@ def init() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_log(actor_vk_id);
+            -- Отметки живости фоновых воркеров: по ним /healthz понимает, что
+            -- процесс бота жив, но, например, рассылка напоминаний встала.
+            CREATE TABLE IF NOT EXISTS worker_heartbeats (
+                name TEXT PRIMARY KEY,
+                last_tick TEXT NOT NULL,
+                ticks INTEGER NOT NULL DEFAULT 0
+            );
 
             CREATE INDEX IF NOT EXISTS idx_subs_user ON subscriptions(user_id);
             CREATE INDEX IF NOT EXISTS idx_reminders_pending ON reminders(notified, remind_at);
             CREATE INDEX IF NOT EXISTS idx_deadlines_at ON deadlines(deadline_at);
             CREATE INDEX IF NOT EXISTS idx_sent_notifs_lookup
-                ON sent_class_notifications(user_id, schedule_row_id, class_date, class_time);
+                ON sent_class_notifications(user_id, class_key, class_date, class_time);
             CREATE INDEX IF NOT EXISTS idx_sent_notifs_date ON sent_class_notifications(class_date);
             CREATE INDEX IF NOT EXISTS idx_notes_user ON notes(user_id);
         """)
@@ -123,6 +135,29 @@ def init() -> None:
         cols = {row[1] for row in conn.execute("PRAGMA table_info(subscriptions)").fetchall()}
         if "disabled" not in cols:
             conn.execute("ALTER TABLE subscriptions ADD COLUMN disabled INTEGER DEFAULT 0")
+
+        # Миграция: class_key вместо schedule_row_id в журнале уведомлений.
+        # Старые строки остаются с NULL — их за двое суток уберёт штатная чистка.
+        cols = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(sent_class_notifications)").fetchall()
+        }
+        if "class_key" not in cols:
+            conn.execute("ALTER TABLE sent_class_notifications ADD COLUMN class_key TEXT")
+
+        # CREATE INDEX IF NOT EXISTS не переопределяет уже существующий индекс,
+        # поэтому на старой БД idx_sent_notifs_lookup остался бы висеть на
+        # schedule_row_id — и новый запрос дедупликации шёл бы мимо него.
+        idx_cols = [
+            row[2]
+            for row in conn.execute("PRAGMA index_info('idx_sent_notifs_lookup')").fetchall()
+        ]
+        if "class_key" not in idx_cols:
+            conn.execute("DROP INDEX IF EXISTS idx_sent_notifs_lookup")
+            conn.execute(
+                "CREATE INDEX idx_sent_notifs_lookup "
+                "ON sent_class_notifications(user_id, class_key, class_date, class_time)"
+            )
 
     # Индексы и WAL для базы расписания
     with connect(config.SCHEDULE_DB) as conn:

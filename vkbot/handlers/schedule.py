@@ -88,7 +88,7 @@ async def try_handle(_bot, message, state, text, uid) -> bool:
             store.pop(uid, None)
             await message.answer("Главное меню:", keyboard=MAIN_KB)
             return True
-        if text.isdigit() and int(text) in repo.directions_by_course:
+        if text.isdecimal() and int(text) in repo.directions_by_course:
             store.patch(uid, step="direction", course=int(text))
             await message.answer("Выбери направление:", keyboard=_direction_kb(int(text)))
             return True

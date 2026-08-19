@@ -36,6 +36,6 @@ def list_for(uid: int) -> list[tuple]:
         ).fetchall()
 
 
-def delete(rid: int) -> None:
+def delete(rid: int, uid: int) -> None:
     with connect() as conn:
-        conn.execute("DELETE FROM reminders WHERE id=?", (rid,))
+        conn.execute("DELETE FROM reminders WHERE id=? AND user_id=?", (rid, uid))

@@ -30,9 +30,9 @@ def list_all_active() -> list[tuple]:
         ).fetchall()
 
 
-def delete(sid: int) -> None:
+def delete(sid: int, uid: int) -> None:
     with connect() as conn:
-        conn.execute("DELETE FROM subscriptions WHERE id=?", (sid,))
+        conn.execute("DELETE FROM subscriptions WHERE id=? AND user_id=?", (sid, uid))
 
 
 def exists(uid: int, course: int, direction: str) -> bool:

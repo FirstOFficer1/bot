@@ -1,4 +1,4 @@
-"""Воркер уведомлений о парах: за 10 минут до начала каждой пары."""
+"""Воркер уведомлений о парах: за N минут до начала каждой пары."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import re
 
 from .. import config, sender
 from ..db import connect
-from ..models import sent_notifs, subscriptions
+from ..models import heartbeats, sent_notifs, subscriptions
 from ..schedule.week import current_week_type
 
 _RU_DAYS = {
@@ -18,63 +18,109 @@ _RU_DAYS = {
     "Saturday": "Суббота", "Sunday": "Воскресенье",
 }
 
+# Легаси-префикс чётности в названии предмета (так писал старый Telegram-бот).
+# Актуальный импортёр держит чётность в колонке `week`, но строки со старым
+# форматом могли остаться в проде — вырезаем префикс при выводе и отсекаем
+# чужую неделю в запросе.
+_WEEK_PREFIX_RE = re.compile(r"^\[(чёт|нечет)\]\s*")
+
+
+def _group_subscriptions() -> dict[tuple[int, str], list[int]]:
+    """Группирует подписчиков по (курс, направление).
+
+    Расписание у группы общее, поэтому достаточно одного запроса к БД на
+    группу — раньше отдельный запрос уходил на каждую подписку.
+    """
+    groups: dict[tuple[int, str], list[int]] = {}
+    for _sid, uid, course, direction in subscriptions.list_all_active():
+        groups.setdefault((course, direction), []).append(uid)
+    return groups
+
+
+def _parse_start(time_field: str | None) -> datetime.time | None:
+    """Достаёт время начала пары из строки вида '1 пара 08:00-09:30'."""
+    m = re.search(r"(\d{1,2}[:.]\d{2})", time_field or "")
+    if not m:
+        return None
+    try:
+        return datetime.datetime.strptime(m.group(1).replace(".", ":"), "%H:%M").time()
+    except ValueError:
+        return None
+
+
+def _day_rows(course: int, direction: str, day: str, week: str) -> list[tuple]:
+    """Пары группы на сегодня с учётом чётности недели: (время, предмет, препод, ауд.).
+
+    Чётность берётся из колонки `week` — так же, как в `repo.get_day()`.
+    Пустое значение означает «пара идёт каждую неделю».
+    """
+    other = "нечет" if week == "чёт" else "чёт"
+    with connect(config.SCHEDULE_DB) as conn:
+        return conn.execute(
+            "SELECT time, subject, teacher, room FROM schedule "
+            "WHERE course=? AND LOWER(direction)=LOWER(?) "
+            "AND LOWER(day)=LOWER(?) "
+            "AND (week IS NULL OR week='' OR week=?) "
+            "AND subject NOT LIKE ?",
+            (course, direction, day, week, "[" + other + "]%"),
+        ).fetchall()
+
 
 async def run(bot) -> None:
     notify_before = datetime.timedelta(minutes=config.CLASS_NOTIFY_BEFORE_MIN)
-    class_dur = datetime.timedelta(minutes=config.CLASS_DURATION_MIN)
 
     while True:
         await asyncio.sleep(config.CLASS_NOTIFY_POLL_SEC)
-        now = config.now_msk()
+        try:
+            now = config.now_msk()
 
-        cutoff = (now - datetime.timedelta(days=config.SENT_NOTIFS_CLEANUP_DAYS)).date().isoformat()
-        sent_notifs.cleanup_older_than(cutoff)
+            cutoff = (
+                now - datetime.timedelta(days=config.SENT_NOTIFS_CLEANUP_DAYS)
+            ).date().isoformat()
+            sent_notifs.cleanup_older_than(cutoff)
 
-        db_day = _RU_DAYS.get(now.strftime("%A"), now.strftime("%A"))
-        week = current_week_type()
-        exclude_prefix = "[нечет]%" if week == "чёт" else "[чёт]%"
+            db_day = _RU_DAYS.get(now.strftime("%A"), now.strftime("%A"))
+            week = current_week_type()
 
-        for _sid, uid, course, direction in subscriptions.list_all_active():
-            with connect(config.SCHEDULE_DB) as conn:
-                rows = conn.execute(
-                    "SELECT rowid, time, subject, teacher, room FROM schedule "
-                    "WHERE course=? AND LOWER(direction)=LOWER(?) "
-                    "AND LOWER(day)=LOWER(?) AND subject NOT LIKE ?",
-                    (course, direction, db_day, exclude_prefix),
-                ).fetchall()
+            for (course, direction), uids in _group_subscriptions().items():
+                for time_field, subject, teacher, room in _day_rows(
+                    course, direction, db_day, week
+                ):
+                    hhmm = _parse_start(time_field)
+                    if hhmm is None:
+                        continue
 
-            for row_id, time_field, subject, teacher, room in rows:
-                m = re.search(r"(\d{1,2}[:.]\d{2})", time_field or "")
-                if not m:
-                    continue
-                try:
-                    hhmm = datetime.datetime.strptime(
-                        m.group(1).replace(".", ":"), "%H:%M"
-                    ).time()
-                except ValueError:
-                    continue
+                    class_start = datetime.datetime.combine(now.date(), hhmm)
+                    # Окно «пора предупредить, но пара ещё не началась».
+                    if not (class_start - notify_before <= now < class_start):
+                        continue
 
-                class_start = datetime.datetime.combine(now.date(), hhmm)
-                class_end = class_start + class_dur
-                if class_end < now - datetime.timedelta(minutes=1):
-                    continue
+                    start_str = class_start.strftime("%H:%M")
+                    date_str = class_start.date().isoformat()
+                    subj_clean = _WEEK_PREFIX_RE.sub("", subject or "")
+                    # Ключ дедупликации не должен зависеть от rowid: переимпорт
+                    # расписания раздаёт новые rowid, и пуши уходили повторно.
+                    key = sent_notifs.class_key(course, direction, subj_clean, room)
+                    lines = [
+                        f"📚 Через {config.CLASS_NOTIFY_BEFORE_MIN} минут начнётся пара!",
+                        f"• {subj_clean}",
+                    ]
+                    if teacher:
+                        lines.append(f"• Преподаватель: {teacher}")
+                    if room:
+                        lines.append(f"• Аудитория: {room}")
+                    lines.append(f"• Начало: {start_str}")
+                    text = "\n".join(lines)
 
-                start_str = class_start.strftime("%H:%M")
-                date_str = class_start.date().isoformat()
-                subj_clean = re.sub(r"^\[(чёт|нечет)\]\s*", "", subject)
-
-                if class_start - notify_before <= now < class_start:
-                    if not sent_notifs.was_sent(uid, row_id, date_str, start_str):
+                    for uid in uids:
+                        if sent_notifs.was_sent(uid, key, date_str, start_str):
+                            continue
                         try:
-                            ok = await sender.send(
-                                bot, uid,
-                                f"📚 Через {config.CLASS_NOTIFY_BEFORE_MIN} минут начнётся пара!\n"
-                                f"• {subj_clean}\n"
-                                f"• Преподаватель: {teacher}\n"
-                                f"• Аудитория: {room}\n"
-                                f"• Начало: {start_str}",
-                            )
-                            if ok:
-                                sent_notifs.mark(uid, row_id, date_str, start_str)
+                            if await sender.send(bot, uid, text):
+                                sent_notifs.mark(uid, key, date_str, start_str)
                         except Exception:
                             logging.exception("Class notify send failure uid=%s", uid)
+            heartbeats.mark(heartbeats.CLASSES)
+        except Exception:
+            # Воркер не должен умирать: одна ошибка не отменяет следующий тик.
+            logging.exception("Class notify worker tick failed")

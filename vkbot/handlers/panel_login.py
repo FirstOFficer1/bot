@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 
 from ..keyboards import MAIN_KB
-from ..models import panel_codes
+from ..models import panel_codes, panel_users
 
 
 def _admin_ids() -> set[int]:
@@ -27,6 +27,14 @@ def _admin_ids() -> set[int]:
     return ids
 
 
+def _is_panel_admin(uid: int) -> bool:
+    """Админ или владелец, выданный через панель. Та же БД, что у web_panel."""
+    try:
+        return panel_users.is_admin(uid)
+    except Exception:
+        return False
+
+
 _TRIGGERS = {"🔑 Войти в панель", "/login", "вход в панель", "войти в панель"}
 
 
@@ -36,7 +44,10 @@ async def try_handle(_bot, message, _state, text, uid) -> bool:
 
     panel_url = os.getenv("PANEL_BASE_URL", "").rstrip("/") or "https://elschedule.ru"
     code, ttl = panel_codes.issue(uid)
-    is_admin = uid in _admin_ids()
+    # Права бывают двух видов: из env (владельцы) и выданные в панели
+    # (panel_users). Раньше учитывались только первые, и админ, которому выдали
+    # доступ через панель, читал в боте, что он обычный пользователь.
+    is_admin = uid in _admin_ids() or _is_panel_admin(uid)
     role = "администратор" if is_admin else "обычный пользователь"
 
     # 1) Информационное сообщение

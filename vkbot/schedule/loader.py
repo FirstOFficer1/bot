@@ -9,15 +9,21 @@
 
 from __future__ import annotations
 
+import logging
 import shutil
 import sqlite3
 import tempfile
-from dataclasses import asdict, dataclass
+from contextlib import closing
+from dataclasses import dataclass
 from pathlib import Path
 
 from .. import config
 from ..db import connect
-from . import repo as repo_mod
+# Импортируем из модуля напрямую: `from . import repo` вернул бы не модуль, а
+# экземпляр ScheduleRepo — пакетный __init__ экспортирует под этим именем
+# синглтон и затеняет одноимённый модуль.
+from .repo import repo as schedule_repo
+from .repo import signal_reload
 
 
 @dataclass
@@ -41,7 +47,7 @@ def _import(excel_path: str, db_path: str) -> int:
 
 def _snapshot_directions(db_path: str) -> tuple[int, set[tuple[int, str]], int]:
     """Возвращает (records, set((course, direction)), courses)."""
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         try:
             records = conn.execute("SELECT COUNT(*) FROM schedule").fetchone()[0]
             pairs = set(
@@ -65,7 +71,12 @@ def preview(excel_path: str) -> Preview:
         new_records = _import(excel_path, tmp_db)
         _, new_pairs, new_courses = _snapshot_directions(tmp_db)
     finally:
-        Path(tmp_db).unlink(missing_ok=True)
+        try:
+            Path(tmp_db).unlink(missing_ok=True)
+        except OSError:
+            # Не роняем превью из-за неудаляемого временного файла: содержимое
+            # уже прочитано, мусор подберёт ОС.
+            logging.warning("Не удалось удалить временную БД %s", tmp_db)
 
     added = [f"{c} курс — {d}" for c, d in sorted(new_pairs - cur_pairs)]
     removed = [f"{c} курс — {d}" for c, d in sorted(cur_pairs - new_pairs)]
@@ -95,11 +106,12 @@ def commit(excel_path: str, uploaded_by: str, original_filename: str) -> dict:
     from datetime import datetime
 
     # 1. Бэкап
-    with sqlite3.connect(config.SCHEDULE_DB) as conn:
+    with closing(sqlite3.connect(config.SCHEDULE_DB)) as conn:
         conn.executescript("""
             DROP TABLE IF EXISTS schedule_backup;
             CREATE TABLE schedule_backup AS SELECT * FROM schedule;
         """)
+        conn.commit()
 
     # 2. Сохраняем оригинальный Excel
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -126,12 +138,12 @@ def commit(excel_path: str, uploaded_by: str, original_filename: str) -> dict:
         )
 
     # 5. Hot-reload: бот заметит изменение mtime в SCHEDULE_RELOAD_POLL_SEC
-    repo_mod.signal_reload()
-    # И сразу обновим in-process кэш для текущего процесса (если бот в нём)
+    signal_reload()
+    # И сразу обновим in-process кэш текущего процесса (если бот в нём)
     try:
-        repo_mod.repo.reload()
+        schedule_repo.reload()
     except Exception:
-        pass
+        logging.exception("Не удалось перечитать кэш расписания после импорта")
 
     return {"row_count": count, "saved_path": str(saved_path)}
 

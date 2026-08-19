@@ -22,8 +22,11 @@ def list_for(uid: int) -> list[tuple]:
         ).fetchall()
 
 
-def delete(ids: list[int]) -> None:
+def delete(ids: list[int], uid: int) -> None:
+    """Удаляет заметки по id, но только принадлежащие uid."""
     if not ids:
         return
     with connect() as conn:
-        conn.executemany("DELETE FROM notes WHERE id=?", ((i,) for i in ids))
+        conn.executemany(
+            "DELETE FROM notes WHERE id=? AND user_id=?", ((i, uid) for i in ids)
+        )

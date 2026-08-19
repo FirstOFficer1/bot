@@ -12,21 +12,45 @@ load_dotenv()
 
 # ── VK API ────────────────────────────────────────────────────────────────────
 VK_TOKEN: str = os.getenv("VK_TOKEN", "")
-ADMIN_ID: int = int(os.getenv("ADMIN_ID", "0"))
+
+
+def int_env(name: str, default: int = 0) -> int:
+    """Целое из env, устойчивое к пустому и мусорному значению.
+
+    В .env.example переменные лежат пустыми (`ADMIN_ID=`), и голый int("")
+    ронял импорт и бота, и панели — с ValueError вместо внятного сообщения.
+    """
+    raw = (os.getenv(name) or "").strip()
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+ADMIN_ID: int = int_env("ADMIN_ID")
 
 # ── Пути БД ───────────────────────────────────────────────────────────────────
+# Пути абсолютные (от корня проекта), а не относительные cwd: иначе сервис,
+# запущенный из другой директории, открывал бы вторую пустую БД.
+# Переопределяются через env — удобно для тестов и для выноса данных на volume.
 ROOT = Path(__file__).resolve().parent.parent
-NOTES_DB: str = str(ROOT / "notes.db")
+DATA_DIR: Path = Path(os.getenv("DATA_DIR") or ROOT)
+
+NOTES_DB: str = os.getenv("NOTES_DB") or str(DATA_DIR / "notes.db")
 # ВНИМАНИЕ: в имени файла буква 'с' — кириллическая (U+0441), не латинская 'c'.
 # Сохранено для обратной совместимости с существующей БД на проде.
-SCHEDULE_DB: str = str(ROOT / "sсhedule.db")
+SCHEDULE_DB: str = os.getenv("SCHEDULE_DB") or str(DATA_DIR / "sсhedule.db")
 
 # Директория для версий загруженных Excel-файлов
-SCHEDULE_VERSIONS_DIR: Path = ROOT / "schedule_versions"
-SCHEDULE_VERSIONS_DIR.mkdir(exist_ok=True)
+SCHEDULE_VERSIONS_DIR: Path = Path(
+    os.getenv("SCHEDULE_VERSIONS_DIR") or (DATA_DIR / "schedule_versions")
+)
+SCHEDULE_VERSIONS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Файл-маркер для hot-reload расписания (mtime отслеживается воркером)
-SCHEDULE_RELOAD_MARKER: Path = ROOT / ".schedule_reload"
+SCHEDULE_RELOAD_MARKER: Path = Path(
+    os.getenv("SCHEDULE_RELOAD_MARKER") or (DATA_DIR / ".schedule_reload")
+)
 
 # ── Лимиты и тайминги ─────────────────────────────────────────────────────────
 NOTES_LIMIT: int = 50
@@ -41,6 +65,9 @@ CLASS_NOTIFY_BEFORE_MIN: int = 10      # за сколько минут пред
 CLASS_DURATION_MIN: int = 90
 DEADLINE_CLEANUP_DAYS: int = 7         # удаление просроченных дедлайнов
 SENT_NOTIFS_CLEANUP_DAYS: int = 2
+PANEL_CODES_CLEANUP_DAYS: int = 1      # использованные и просроченные коды входа
+AUDIT_KEEP_DAYS: int = 365             # журнал действий: год, потом удаляется
+HOUSEKEEPING_EVERY_SEC: int = 3600     # как часто воркер дедлайнов чистит таблицы
 
 # ── Часовой пояс ──────────────────────────────────────────────────────────────
 MSK = datetime.timezone(datetime.timedelta(hours=3))
