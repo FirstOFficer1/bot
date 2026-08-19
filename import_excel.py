@@ -11,6 +11,7 @@ The script clears the schedule table and re-imports from Excel.
 import re
 import sqlite3
 import sys
+from contextlib import closing
 
 import openpyxl
 
@@ -50,7 +51,10 @@ def _reconstruct_spaced_line(line: str) -> str:
 
 
 _JUNK_CHARS = re.compile(
-    r"[﻿​‌‍⁠­   ]"
+    # Escape-последовательности вместо самих символов: раньше здесь стояли
+    # живые невидимые знаки — исходник нельзя было проверить глазами, а любой
+    # редактор мог их незаметно съесть. Поведение регулярки не меняется.
+    r"[\ufeff\u200b\u200c\u200d\u2060\xad\xa0\u202f\u2009]"
 )
 
 
@@ -115,6 +119,116 @@ def parse_direction_course(header: str) -> tuple[str, int]:
     return direction, course
 
 
+# Строка-продолжение: только преподаватель, возможно с аудиторией в скобках.
+# «Матвеева Н.А. (5 уч. к.)» — это не новая пара, а хвост предыдущей.
+_TEACHER_ONLY_RE = re.compile(
+    r"^[А-ЯЁ][а-яё]+\s*[А-ЯЁ]\.\s*[А-ЯЁ]?\.?\s*(?:\([^)]*\))?\s*[.,;]*\s*$"
+)
+
+# Строка, начинающаяся с типа занятия (в т.ч. после маркера чётности):
+# «* лк ** пр 5 корп 102», «пр. 30.09,7,14,21.10;» — тоже хвост предыдущей пары.
+_TYPE_LEAD_RE = re.compile(r"^\*{0,2}\s*(?:лк|пр|лб|лек|лекция)\b", re.IGNORECASE)
+
+# Чётность относится к ТИПУ одной и той же пары: «* лк ** лб 426».
+_PARITY_TYPES_RE = re.compile(
+    r"\*\s*(лк|пр|лб|лек|лекция)\b\s*[,;]?\s*\*\*\s*(лк|пр|лб|лек|лекция)\b\s*(.*)$",
+    re.IGNORECASE,
+)
+
+# Дата или перечисление дат одного месяца: «30.09», «23.09.2026», «по 18.11»,
+# «2, 9, 16, 23.09» (в расписании физкультуры номера дней идут через запятую,
+# а месяц указан только у последнего).
+_DATE_TOKEN_RE = re.compile(
+    r"(?:(?:до|с|от|по)\s+)?(?:\d{1,2}\s*,\s*)*\d{1,2}\s*\.\s*\d{1,2}(?:\.\d{2,4})?"
+)
+
+# Хвост вида «- лек 8 ч.:» в названии предмета.
+_HOURS_TAIL_RE = re.compile(r"\s*[-–—]?\s*(лк|пр|лб|лек|лекция)\b.*$", re.IGNORECASE)
+
+_CANON_TYPE = {"лек": "лекция", "лк": "лк", "пр": "пр", "лб": "лб", "лекция": "лекция"}
+
+
+def _canon_type(raw: str) -> str:
+    return _CANON_TYPE.get(raw.lower().strip(), raw.lower().strip())
+
+
+def _split_subject_teacher(head: str) -> tuple[str, str, str]:
+    """Делит «Предмет, Фамилия И. О.» на (предмет, преподаватель, даты)."""
+    head = head.strip().rstrip(",").strip()
+    idx = head.rfind(",")
+    if idx != -1:
+        tail = head[idx + 1:].strip()
+        if _TEACHER_RE.match(tail):
+            teacher, dates = _parse_teacher(tail)
+            return head[:idx].strip(), teacher, dates
+    m = re.search(r"([А-ЯЁ][а-яё]{2,}\s+[А-ЯЁ]\.\s*[А-ЯЁ]?\.?)\s*$", head)
+    if m:
+        teacher, dates = _parse_teacher(m.group(1))
+        return head[:m.start()].strip().rstrip(",").strip(), teacher, dates
+    return head, "", ""
+
+
+def _split_dates_from_room(room_raw: str) -> tuple[str, str]:
+    """Отделяет диапазон дат от аудитории: «30.09 по 18. 11 5 уч.к 101».
+
+    Даты уезжали в поле аудитории, а колонка date_range не заполнялась никогда.
+    """
+    room = room_raw.strip()
+    if not room:
+        return "", ""
+    dates: list[str] = []
+    while True:
+        m = _DATE_TOKEN_RE.match(room)
+        if not m:
+            break
+        dates.append(m.group(0).strip())
+        room = room[m.end():].lstrip(" ,;")
+    return room.strip(), " ".join(dates).strip()
+
+
+def _parse_date_schedule_entry(entry: str, week: str) -> dict | None:
+    """Ячейка, где занятие расписано по датам (физкультура и подобные).
+
+    Пример: «Физическая культура и спорт - лек 8 ч.: 2, 9, 16, 23.09
+             Матвеева Н.А. (гл. уч. к.) пр. 30.09,7,14,21.10; Матвеева Н.А. (5 уч. к.)»
+    Прежний разбор резал перечисление дат по запятым и выдавал пару с названием
+    «Матвеева Н.А. (5 уч. к.)» — студенту прилетал пуш ровно с таким текстом.
+    Здесь такая ячейка становится одной парой, а даты уходят в date_range.
+    """
+    tokens = _DATE_TOKEN_RE.findall(entry)
+    if len(tokens) < 3 and "ч.:" not in entry:
+        return None
+
+    tm = re.search(r"([А-ЯЁ][а-яё]{2,}\s*[А-ЯЁ]\.\s*[А-ЯЁ]?\.?)", entry)
+    teacher = _clean_teacher(tm.group(1)) if tm else ""
+    subject_part = entry[: tm.start()] if tm else entry
+
+    ct_m = re.search(r"\b(лк|пр|лб|лек|лекция)\b", subject_part, re.IGNORECASE)
+    class_type = _canon_type(ct_m.group(1)) if ct_m else ""
+    subject = _HOURS_TAIL_RE.sub("", subject_part).strip(" ,;-–—")
+
+    rooms = re.findall(r"\(([^)]*)\)", entry)
+    room = rooms[0].strip() if rooms else ""
+
+    # Даты собираем в исходном порядке, без дублей — их показывает панель.
+    dates: list[str] = []
+    for m in _DATE_TOKEN_RE.finditer(entry):
+        d = m.group(0).strip()
+        if d not in dates:
+            dates.append(d)
+
+    if not subject:
+        return None
+    return {
+        "subject": subject,
+        "teacher": teacher,
+        "room": room,
+        "week": week,
+        "class_type": class_type,
+        "date_range": ", ".join(dates),
+    }
+
+
 def parse_cell(cell_text: str) -> list[dict]:
     """
     Parse one schedule cell into records.
@@ -135,10 +249,13 @@ def parse_cell(cell_text: str) -> list[dict]:
 
     # Group lines into logical entries.
     # A new entry starts when:
-    #   a) a line begins with * or ** (explicit week markers), OR
+    #   a) a line begins with * or ** (explicit week markers) — но только если
+    #      дальше идёт название предмета, а не тип занятия: «* лк ** пр 424» —
+    #      это чётность ТИПА одной пары, а не вторая пара;
     #   b) a line starts with an uppercase Cyrillic letter AND the current
     #      accumulated lines already contain a class-type keyword (лк/пр/лб),
-    #      which means the previous entry is complete and a new subject begins.
+    #      which means the previous entry is complete and a new subject begins —
+    #      кроме строк, состоящих из одного преподавателя: это перенос хвоста.
     _CLASS_TYPE_RE = re.compile(r'\b(лк|пр|лб|лекция)\b', re.IGNORECASE)
     raw_lines = text.split("\n")
     entries_raw: list[str] = []
@@ -148,13 +265,14 @@ def parse_cell(cell_text: str) -> list[dict]:
         stripped = line.strip()
         if not stripped:
             continue
-        if stripped.startswith("*") and current:
+        if stripped.startswith("*") and current and not _TYPE_LEAD_RE.match(stripped):
             entries_raw.append(" ".join(current))
             current = [stripped]
         elif (
             current
             and re.match(r'[А-ЯЁ]', stripped)
             and _CLASS_TYPE_RE.search(" ".join(current))
+            and not _TEACHER_ONLY_RE.match(stripped)
         ):
             # Current entry already has a class type — new subject starting
             entries_raw.append(" ".join(current))
@@ -180,6 +298,26 @@ def parse_cell(cell_text: str) -> list[dict]:
 
         # Normalize internal spaces left after joining lines
         entry = re.sub(r"  +", " ", entry).strip()
+
+        # Паттерн 0a: чётность относится к типу занятия — «* лк ** лб 426».
+        # Пара одна, но по нечётной неделе это лекция, по чётной — лабораторная.
+        mt = _PARITY_TYPES_RE.search(entry)
+        if mt:
+            subject0, teacher0, dates0 = _split_subject_teacher(entry[: mt.start()])
+            room0, room_dates = _split_dates_from_room(mt.group(3))
+            for wk, ct in (("нечет", mt.group(1)), ("чёт", mt.group(2))):
+                results.append({
+                    "subject": subject0, "teacher": teacher0, "room": room0,
+                    "week": week or wk, "class_type": _canon_type(ct),
+                    "date_range": dates0 or room_dates,
+                })
+            continue
+
+        # Паттерн 0b: занятие расписано по датам (физкультура и подобные).
+        dated = _parse_date_schedule_entry(entry, week)
+        if dated:
+            results.append(dated)
+            continue
 
         # Паттерн 1: "Предмет, Преподаватель лк/пр/лб/лекция Аудитория"
         # Ищем запятую перед фамилией (заглавная + строчные), а не перед первым словом,
@@ -229,10 +367,12 @@ def parse_cell(cell_text: str) -> list[dict]:
                     })
                     i += 2
             else:
+                room_clean, room_dates = _split_dates_from_room(room_raw)
                 results.append({
                     "subject": subject, "teacher": teacher,
-                    "room": room_raw, "week": week,
-                    "class_type": class_type, "date_range": date_range,
+                    "room": room_clean, "week": week,
+                    "class_type": class_type,
+                    "date_range": date_range or room_dates,
                 })
             continue
 
@@ -416,8 +556,14 @@ def import_schedule(excel_path: str = DEFAULT_EXCEL, db_path: str = DB_PATH) -> 
 
     print(f"\nParsed {len(records)} schedule records")
 
-    # Write to DB
-    conn = sqlite3.connect(db_path)
+    # Write to DB. Соединение закрываем через closing(): при ошибке импорта оно
+    # иначе остаётся открытым, а на Windows это блокирует удаление файла БД —
+    # панель зовёт импорт для временной базы, когда считает превью.
+    with closing(sqlite3.connect(db_path)) as conn:
+        return _write_records(conn, records)
+
+
+def _write_records(conn: sqlite3.Connection, records: list[tuple]) -> int:
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS schedule (
@@ -449,7 +595,6 @@ def import_schedule(excel_path: str = DEFAULT_EXCEL, db_path: str = DB_PATH) -> 
     conn.commit()
     cursor.execute("SELECT COUNT(*) FROM schedule")
     new_count = cursor.fetchone()[0]
-    conn.close()
 
     print(f"New records in DB: {new_count}")
     print("Import complete!")
