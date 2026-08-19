@@ -957,7 +957,8 @@ _BASE_TPL = """
     }
     code { color: var(--text); background: var(--surface-2); padding: 1px 6px; border-radius: 5px; font-family: var(--font-mono); font-size: .9em; }
 
-    .page-title h2, .page-title h3 { font-weight: 700; letter-spacing: -.02em; color: var(--text); }
+    .page-title h1, .page-title h2, .page-title h3 { font-weight: 700; letter-spacing: -.02em;
+      color: var(--text); font-size: 28px; margin: 0; }
 
     /* ============================================================
        Responsive: Tablet (≤ 1024px) — narrow rail sidebar
@@ -999,7 +1000,7 @@ _BASE_TPL = """
       .topbar { padding: 0 16px; height: 56px; }
       .topbar-crumbs { font-size: 13px; }
       .page { padding: 16px; gap: 16px; }
-      .page-title h2, .page-title h3 { font-size: 22px; }
+      .page-title h1, .page-title h2, .page-title h3 { font-size: 22px; }
       .stat-card .fs-2 { font-size: 24px !important; }
       .stat-card .fs-3 { font-size: 20px !important; }
       .card-header { padding: 12px 14px; }
@@ -1557,7 +1558,7 @@ _DASHBOARD_CONTENT = """
 } %}
 {% macro tcolor(t) %}{{ TYPE_COLORS.get((t or '').strip().lower(), '#7A7872') }}{% endmacro %}
 
-{% macro day_card(label, info) %}
+{% macro day_card(label, info, quick='today') %}
   <div class="card" style="overflow:hidden;">
     <div style="padding:14px 18px;border-bottom:1px solid var(--border);background:var(--surface-2);display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
       <span style="font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--text-3);">{{ label }}</span>
@@ -1567,14 +1568,17 @@ _DASHBOARD_CONTENT = """
         {% if info.is_sunday %}выходной 🎉{% else %}{{ info.rows|length }} пар{% endif %}
       </span>
     </div>
-    <div style="padding:10px 14px;max-height:380px;overflow-y:auto;">
+    <div style="padding:10px 14px;">
       {% if info.is_sunday %}
         <div style="padding:30px;text-align:center;color:var(--text-3);">Воскресенье — занятий нет</div>
       {% elif not info.rows %}
         <div style="padding:24px;text-align:center;color:var(--text-3);">Нет занятий</div>
       {% else %}
         {% set last_group = namespace(course=None, direction=None) %}
-        {% for r in info.rows %}
+        {# Карточка раньше прятала хвост в скрытый скролл и резала пару пополам.
+           Показываем первые восемь и честно говорим, сколько осталось. #}
+        {% set shown = info.rows[:8] %}
+        {% for r in shown %}
           {% if r[0] != last_group.course or r[1] != last_group.direction %}
             {% if not loop.first %}<div style="height:8px;"></div>{% endif %}
             <div style="display:flex;align-items:center;gap:8px;padding:6px 4px 8px;font-size:11.5px;">
@@ -1589,7 +1593,7 @@ _DASHBOARD_CONTENT = """
               <span>{{ r[3] }}</span>
               {% if r[7] %}<span class="week">{{ r[7] }}</span>{% endif %}
               <span style="flex:1;"></span>
-              {% if r[8] %}<span class="type-badge" style="--type-color: {{ tcolor(r[8]) }};">{{ r[8] }}</span>{% endif %}
+              {% if r[8] %}<span class="type-badge" style="--type-color: {{ tcolor(r[8]) }};">{{ type_short(r[8]) }}</span>{% endif %}
             </div>
             <div class="pair-subject">{{ r[4] }}</div>
             <div class="pair-meta">
@@ -1598,6 +1602,14 @@ _DASHBOARD_CONTENT = """
             </div>
           </div>
         {% endfor %}
+        {% if info.rows|length > shown|length %}
+          <a href="{{ url_for('schedule_page', quick=quick) }}"
+             style="display:block;margin-top:4px;padding:10px;text-align:center;border-radius:10px;
+                    background:var(--surface-2);color:var(--text-2);text-decoration:none;
+                    font-size:13px;font-weight:500;">
+            Ещё {{ info.rows|length - shown|length }} пар за этот день →
+          </a>
+        {% endif %}
       {% endif %}
     </div>
   </div>
@@ -1605,7 +1617,7 @@ _DASHBOARD_CONTENT = """
 
 <div class="d-flex align-items-center justify-content-between mb-4" style="flex-wrap:wrap;gap:10px;">
   <div>
-    <h3 class="mb-0">{% if is_admin %}📊 Дашборд{% else %}📅 Моё расписание{% endif %}</h3>
+    <h1 class="mb-0 h3">{% if is_admin %}📊 Дашборд{% else %}📅 Моё расписание{% endif %}</h1>
     <div style="margin-top:4px;color:var(--text-3);font-size:13px;">
       Привет, {{ display_name or 'друг' }}!
       {% if pref %}Сейчас твоя подписка — <strong style="color:var(--accent);">{{ pref[0] }} курс · {{ pref[1] }}</strong>.
@@ -1655,7 +1667,7 @@ _DASHBOARD_CONTENT = """
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   <div style="flex:1;min-width:140px;">
     <label class="form-label" style="font-size:11px;margin-bottom:4px;">Курс</label>
-    <select name="course" id="subCourse" class="form-select form-select-sm" required>
+    <select aria-label="Курс" name="course" id="subCourse" class="form-select form-select-sm" required>
       <option value="">— выбери —</option>
       {% for c in all_courses %}
         <option value="{{ c }}" {% if pref and pref[0] == c %}selected{% endif %}>{{ c }} курс</option>
@@ -1664,7 +1676,7 @@ _DASHBOARD_CONTENT = """
   </div>
   <div style="flex:2;min-width:200px;">
     <label class="form-label" style="font-size:11px;margin-bottom:4px;">Направление</label>
-    <select name="direction" id="subDirection" class="form-select form-select-sm" required>
+    <select aria-label="Направление" name="direction" id="subDirection" class="form-select form-select-sm" required>
       <option value="">— сначала выбери курс —</option>
       {% if pref %}
         {% for d in dirs_by_course.get(pref[0], []) %}
@@ -1699,7 +1711,7 @@ _DASHBOARD_CONTENT = """
 <!-- ─── Расписание: сегодня и завтра (видно всем) ─────────── -->
 <div class="row g-3 mb-4">
   <div class="col-lg-6">{{ day_card('📍 Сегодня' + (' · ' + pref[0]|string + 'к ' + pref[1] if pref else ''), preview.today) }}</div>
-  <div class="col-lg-6">{{ day_card('→ Завтра' + (' · ' + pref[0]|string + 'к ' + pref[1] if pref else ''), preview.tomorrow) }}</div>
+  <div class="col-lg-6">{{ day_card('→ Завтра' + (' · ' + pref[0]|string + 'к ' + pref[1] if pref else ''), preview.tomorrow, 'tomorrow') }}</div>
 </div>
 
 {% if not pref and not is_admin %}
@@ -2124,7 +2136,7 @@ _SCHEDULE_CONTENT = """
 
 <div class="page-title" style="display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:14px;">
   <div>
-    <h2 style="font-size:28px;font-weight:700;letter-spacing:-.02em;margin:0;">Расписание · VK-база</h2>
+    <h1 style="font-size:28px;font-weight:700;letter-spacing:-.02em;margin:0;">Расписание · VK-база</h1>
     <div style="margin-top:6px;font-size:14px;color:var(--text-3);">
       Показано <strong style="color:var(--text);">{{ rows|length }}</strong> из {{ total }} записей{% if rows|length != total %} · фильтры активны{% endif %}
     </div>
@@ -2142,8 +2154,8 @@ _SCHEDULE_CONTENT = """
        class="{{ 'on' if quick == 'today' }}" style="text-decoration:none;display:inline-flex;align-items:center;padding:0 14px;height:32px;border-radius:7px;font-size:13px;font-weight:500;color:var(--text-3);">📍 Сегодня</a>
     <a href="{{ url_for('schedule_page', quick='tomorrow') }}"
        class="{{ 'on' if quick == 'tomorrow' }}" style="text-decoration:none;display:inline-flex;align-items:center;padding:0 14px;height:32px;border-radius:7px;font-size:13px;font-weight:500;color:var(--text-3);">→ Завтра</a>
-    <a href="{{ url_for('schedule_page') }}"
-       class="{{ 'on' if not (quick or day_filter or week_filter or course_filter or q) }}" style="text-decoration:none;display:inline-flex;align-items:center;padding:0 14px;height:32px;border-radius:7px;font-size:13px;font-weight:500;color:var(--text-3);">🗓 Вся неделя</a>
+    <a href="{{ url_for('schedule_page', quick='all') }}"
+       class="{{ 'on' if quick == 'all' }}" style="text-decoration:none;display:inline-flex;align-items:center;padding:0 14px;height:32px;border-radius:7px;font-size:13px;font-weight:500;color:var(--text-3);">🗓 Вся неделя</a>
   </div>
   {% if quick == 'today' or quick == 'tomorrow' %}
     <span class="chip" style="background:var(--accent-soft);color:var(--accent);border-color:transparent;height:26px;padding:0 12px;font-weight:600;border-radius:999px;display:inline-flex;align-items:center;">
@@ -2155,7 +2167,7 @@ _SCHEDULE_CONTENT = """
 <form class="card" method="get" style="padding:14px 18px;display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;align-items:end;">
   <div>
     <label class="form-label" style="font-size:11px;margin-bottom:4px;">Курс</label>
-    <select name="course" class="form-select form-select-sm">
+    <select aria-label="Фильтр по курсу" name="course" class="form-select form-select-sm">
       <option value="">Все курсы</option>
       {% for c in courses %}
         <option value="{{ c }}" {% if c|string == course_filter %}selected{% endif %}>{{ c }} курс</option>
@@ -2164,7 +2176,7 @@ _SCHEDULE_CONTENT = """
   </div>
   <div>
     <label class="form-label" style="font-size:11px;margin-bottom:4px;">Направление</label>
-    <select name="direction" class="form-select form-select-sm">
+    <select aria-label="Фильтр по направлению" name="direction" class="form-select form-select-sm">
       <option value="">Все направления</option>
       {% for d in directions %}
         <option value="{{ d }}" {% if d == direction_filter %}selected{% endif %}>{{ d }}</option>
@@ -2173,7 +2185,7 @@ _SCHEDULE_CONTENT = """
   </div>
   <div>
     <label class="form-label" style="font-size:11px;margin-bottom:4px;">День недели</label>
-    <select name="day" class="form-select form-select-sm">
+    <select aria-label="Фильтр по дню недели" name="day" class="form-select form-select-sm">
       <option value="">Все дни</option>
       {% for d in DAYS %}
         <option value="{{ d }}" {% if d == day_filter %}selected{% endif %}>{{ d }}</option>
@@ -2182,7 +2194,7 @@ _SCHEDULE_CONTENT = """
   </div>
   <div>
     <label class="form-label" style="font-size:11px;margin-bottom:4px;">Неделя</label>
-    <select name="week" class="form-select form-select-sm">
+    <select aria-label="Фильтр по чётности недели" name="week" class="form-select form-select-sm">
       <option value="">Любая</option>
       <option value="чёт" {% if week_filter == 'чёт' %}selected{% endif %}>Чётная</option>
       <option value="нечет" {% if week_filter == 'нечет' %}selected{% endif %}>Нечётная</option>
@@ -2190,7 +2202,7 @@ _SCHEDULE_CONTENT = """
   </div>
   <div>
     <label class="form-label" style="font-size:11px;margin-bottom:4px;">Тип занятия</label>
-    <select name="type" class="form-select form-select-sm">
+    <select aria-label="Фильтр по типу занятия" name="type" class="form-select form-select-sm">
       <option value="">Все типы</option>
       {% for t in types %}
         <option value="{{ t }}" {% if t == type_filter %}selected{% endif %}>{{ t }}</option>
@@ -2199,7 +2211,7 @@ _SCHEDULE_CONTENT = """
   </div>
   <div>
     <label class="form-label" style="font-size:11px;margin-bottom:4px;">Преподаватель</label>
-    <select name="teacher" class="form-select form-select-sm">
+    <select aria-label="Фильтр по преподавателю" name="teacher" class="form-select form-select-sm">
       <option value="">Все преподаватели</option>
       {% for t in teachers %}
         <option value="{{ t }}" {% if t == teacher_filter %}selected{% endif %}>{{ t }}</option>
@@ -2208,7 +2220,7 @@ _SCHEDULE_CONTENT = """
   </div>
   <div>
     <label class="form-label" style="font-size:11px;margin-bottom:4px;">Аудитория</label>
-    <select name="room" class="form-select form-select-sm">
+    <select aria-label="Фильтр по аудитории" name="room" class="form-select form-select-sm">
       <option value="">Любая</option>
       {% for r in rooms %}
         <option value="{{ r }}" {% if r == room_filter %}selected{% endif %}>{{ r }}</option>
@@ -2307,7 +2319,7 @@ _SCHEDULE_CONTENT = """
             <td style="white-space:nowrap;font-family:var(--font-mono);font-size:12.5px;">{{ r[3] }}</td>
             <td style="color:var(--text-3);">{{ r[7] or '—' }}</td>
             <td style="font-weight:500;">{{ r[4] }}</td>
-            <td><span class="type-badge" style="--type-color: {{ type_color(r[8]) }};">{{ r[8] or '—' }}</span></td>
+            <td><span class="type-badge" style="--type-color: {{ type_color(r[8]) }};">{{ type_short(r[8]) or '—' }}</span></td>
             <td style="color:var(--text-3);">{{ r[5] }}</td>
             <td style="font-family:var(--font-mono);font-size:12.5px;">{{ r[6] }}</td>
             <td style="color:var(--text-3);font-size:12.5px;">{{ r[9] or '—' }}</td>
@@ -2348,7 +2360,7 @@ _SCHEDULE_CONTENT = """
                       <span>{{ r[3] }}</span>
                       {% if r[7] %}<span class="week">{{ r[7] }}</span>{% endif %}
                       <span style="flex:1;"></span>
-                      {% if r[8] %}<span class="type-badge" style="--type-color: {{ type_color(r[8]) }};">{{ r[8] }}</span>{% endif %}
+                      {% if r[8] %}<span class="type-badge" style="--type-color: {{ type_color(r[8]) }};">{{ type_short(r[8]) }}</span>{% endif %}
                     </div>
                     <div class="pair-subject">{{ r[4] }}</div>
                     <div class="pair-meta">
@@ -2404,7 +2416,7 @@ _ME_CONTENT = """
 
 <div class="d-flex align-items-center mb-4 gap-3">
   <div>
-    <h3 class="mb-0">👤 Мой профиль</h3>
+    <h1 class="mb-0 h3">👤 Мой профиль</h1>
     <span class="text-muted small">
       VK: <a href="https://vk.com/id{{ vk_id }}" target="_blank">vk.com/id{{ vk_id }}</a>
     </span>
@@ -2841,7 +2853,7 @@ def _today_tomorrow_preview(course: int | None = None, direction: str | None = N
                 "week, class_type, date_range FROM schedule "
                 "WHERE day = ? AND (week IS NULL OR week = '' OR week = ?)"
                 + extra_conds
-                + " ORDER BY course, direction, time",
+                + f" ORDER BY course, direction, {_TIME_ORDER_SQL}",
                 (day_name, wk, *extra_params),
             ).fetchall()
             out[key] = {"day": day_name, "week": wk, "rows": rows, "is_sunday": False, "date": d.isoformat()}
@@ -3371,6 +3383,33 @@ def _today_tomorrow_filter(quick: str) -> tuple[str, str]:
 
 
 # SQL-фрагмент для правильной сортировки дней (Пн → Сб) — стабильно для SQLite
+# Сортировать по колонке `time` как по тексту нельзя: в файлах вуза время
+# записано и как «1 пара 08:00-09:30», и как «8.15 - 9.45». Во втором случае
+# лексикографически «8» больше «1», и утренние пары уезжали в конец дня.
+# Берём число до первого пробела — номер пары в старом формате и час в новом.
+# То же выражение использует бот (vkbot/schedule/repo.py::get_day).
+_TIME_ORDER_SQL = "CAST(SUBSTR(time, 1, INSTR(time, ' ') - 1) AS INTEGER), time"
+
+# Типы занятий в исходниках пишут по-разному: «лк», «лек», «лекция». Плашка в
+# интерфейсе узкая, и «ЛЕКЦИЯ» ломала ряд карточек — приводим к короткой форме
+# на отображении, не трогая данные (в старых строках лежит длинный вариант).
+_TYPE_SHORT = {
+    "лекция": "лк", "лекц": "лк", "лек": "лк",
+    "практика": "пр", "практ": "пр",
+    "лабораторная": "лб", "лаб": "лб",
+    "семинар": "сем", "курсовая": "кур",
+    "экзамен": "экз", "зачёт": "зач", "зачет": "зач",
+}
+
+
+def _type_short(value: str | None) -> str:
+    v = (value or "").strip().lower()
+    return _TYPE_SHORT.get(v, v)
+
+
+app.jinja_env.globals["type_short"] = _type_short
+
+
 _DAY_ORDER_SQL = (
     "CASE day "
     "WHEN 'Понедельник' THEN 1 WHEN 'Вторник' THEN 2 WHEN 'Среда' THEN 3 "
@@ -3391,6 +3430,13 @@ def schedule_page():
     room_filter = request.args.get("room", "").strip()
     quick = request.args.get("quick", "").strip()
     q = request.args.get("q", "").strip()
+
+    # Без фильтров страница отдавала всё расписание разом: почти мегабайт HTML
+    # и 28 000 пикселей высоты. Открываем на сегодняшнем дне — «Вся неделя»
+    # рядом, явной ссылкой quick=all.
+    if not any((course_filter, day_filter, week_filter, direction_filter,
+                teacher_filter, type_filter, room_filter, quick, q)):
+        quick = "today"
 
     # Quick-фильтры (Сегодня/Завтра) — переопределяют day/week
     if quick in ("today", "tomorrow"):
@@ -3484,7 +3530,7 @@ def schedule_page():
         if conds:
             sql += " WHERE " + " AND ".join(conds)
         # Стабильная сортировка: курс → направление → день (Пн-Сб) → время
-        sql += f" ORDER BY course, direction, {_DAY_ORDER_SQL}, time"
+        sql += f" ORDER BY course, direction, {_DAY_ORDER_SQL}, {_TIME_ORDER_SQL}"
         rows = conn.execute(sql, params).fetchall()
     except Exception:
         pass
@@ -3652,7 +3698,7 @@ def _aggregate_users(search: str = "") -> list[dict]:
 _USERS_CONTENT = """
 {% set self_url = url_for('users_page', q=q) if q else url_for('users_page') %}
 <div class="page-title">
-  <h2>👥 Пользователи бота</h2>
+  <h1>👥 Пользователи бота</h1>
   <form method="get" class="d-flex gap-2" style="flex: 1; max-width: 360px;">
     <input type="text" name="q" value="{{ q }}" class="form-control form-control-sm"
            placeholder="Поиск по ID или имени">
@@ -3764,7 +3810,7 @@ def users_page():
 
 _ADMINS_CONTENT = """
 <div class="page-title">
-  <h2>🛡️ Управление админами</h2>
+  <h1>🛡️ Управление админами</h1>
 </div>
 
 {% if flash %}
@@ -3777,7 +3823,7 @@ _ADMINS_CONTENT = """
     <form method="post" action="{{ url_for('admin_grant') }}" class="row g-2 align-items-center">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="col-sm-8 col-md-6">
-        <input type="text" name="query" class="form-control" required autocomplete="off"
+        <input aria-label="VK ID или имя" type="text" name="query" class="form-control" required autocomplete="off"
                list="grantUsers"
                placeholder="VK ID, vk.com/id…, или имя из бота">
         <datalist id="grantUsers">
@@ -3803,11 +3849,11 @@ _ADMINS_CONTENT = """
     <form method="post" action="{{ url_for('owner_grant') }}" class="row g-2 align-items-center">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="col-sm-7 col-md-5">
-        <input type="text" name="query" class="form-control" required autocomplete="off"
+        <input aria-label="VK ID или имя" type="text" name="query" class="form-control" required autocomplete="off"
                list="grantUsers" placeholder="VK ID, vk.com/id…, или имя из бота">
       </div>
       <div class="col-auto">
-        <input type="text" name="code" class="form-control" required
+        <input aria-label="Одноразовый код из бота" type="text" name="code" class="form-control" required
                inputmode="numeric" pattern="[0-9]*" maxlength="6" minlength="6"
                autocomplete="off" placeholder="код из бота" style="max-width:11rem;">
       </div>
@@ -3864,7 +3910,7 @@ _ADMINS_CONTENT = """
                       class="d-inline-flex gap-1 align-items-center justify-content-end">
                   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                   <input type="hidden" name="vk_id" value="{{ o.vk_id }}">
-                  <input type="text" name="code" required class="form-control form-control-sm"
+                  <input aria-label="Код подтверждения" type="text" name="code" required class="form-control form-control-sm"
                          inputmode="numeric" pattern="[0-9]*" maxlength="6" minlength="6"
                          autocomplete="off" placeholder="код" style="max-width:6.5rem;">
                   <button class="btn btn-sm btn-outline-danger">👑 Снять владение</button>
@@ -4208,7 +4254,7 @@ def _find_conflicts() -> dict:
                 WHERE teacher IS NOT NULL AND teacher != ''
                 GROUP BY teacher, day, time, w
                 HAVING n > 1
-                ORDER BY teacher, day, time
+                ORDER BY teacher, """ + _DAY_ORDER_SQL + """, """ + _TIME_ORDER_SQL + """
                 """
             ).fetchall():
                 teachers.append({
@@ -4228,7 +4274,7 @@ def _find_conflicts() -> dict:
                 WHERE room IS NOT NULL AND room != ''
                 GROUP BY room, day, time, w
                 HAVING n > 1
-                ORDER BY room, day, time
+                ORDER BY room, """ + _DAY_ORDER_SQL + """, """ + _TIME_ORDER_SQL + """
                 """
             ).fetchall():
                 rooms.append({
@@ -4243,7 +4289,7 @@ def _find_conflicts() -> dict:
 
 _CONFLICTS_CONTENT = """
 <div class="page-title">
-  <h2>⚠️ Конфликты в расписании</h2>
+  <h1>⚠️ Конфликты в расписании</h1>
   <div style="color:var(--text-3);font-size:13px;">
     Преподаватель/аудитория с двумя парами в одно время. Проверяй после каждой загрузки.
   </div>
@@ -4366,14 +4412,14 @@ def _diff_pairs(a: set[tuple], b: set[tuple]) -> dict:
 
 _DIFF_CONTENT = """
 <div class="page-title">
-  <h2>🔀 Diff между версиями расписания</h2>
+  <h1>🔀 Diff между версиями расписания</h1>
   <div style="color:var(--text-3);font-size:13px;">Что появилось / исчезло между двумя загрузками</div>
 </div>
 
 <form method="get" class="card mb-4" style="padding:14px 18px;display:flex;gap:12px;align-items:end;flex-wrap:wrap;">
   <div>
     <label class="form-label" style="font-size:11px;">База (старая версия)</label>
-    <select name="a" class="form-select form-select-sm">
+    <select aria-label="Версия слева" name="a" class="form-select form-select-sm">
       {% for v in versions %}
         <option value="{{ v.id }}" {% if v.id == a_id %}selected{% endif %}>
           #{{ v.id }} · {{ v.uploaded_at }} · {{ v.original_filename }}
@@ -4383,7 +4429,7 @@ _DIFF_CONTENT = """
   </div>
   <div>
     <label class="form-label" style="font-size:11px;">Сравнить с (новая версия)</label>
-    <select name="b" class="form-select form-select-sm">
+    <select aria-label="Версия справа" name="b" class="form-select form-select-sm">
       {% for v in versions %}
         <option value="{{ v.id }}" {% if v.id == b_id %}selected{% endif %}>
           #{{ v.id }} · {{ v.uploaded_at }} · {{ v.original_filename }}
@@ -4479,7 +4525,7 @@ def diff_page():
 
 _ENTITY_CONTENT = """
 <div class="page-title">
-  <h2>{{ icon }} {{ title }}</h2>
+  <h1>{{ icon }} {{ title }}</h1>
   <div style="color:var(--text-3);font-size:13px;">{{ rows|length }} пар(ы) в расписании</div>
 </div>
 
@@ -4516,7 +4562,7 @@ _ENTITY_CONTENT = """
                 <span>{{ r[3] }}</span>
                 {% if r[7] %}<span class="week">{{ r[7] }}</span>{% endif %}
                 <span style="flex:1;"></span>
-                {% if r[8] %}<span class="type-badge" style="--type-color: {{ tc(r[8]) }};">{{ r[8] }}</span>{% endif %}
+                {% if r[8] %}<span class="type-badge" style="--type-color: {{ tc(r[8]) }};">{{ type_short(r[8]) }}</span>{% endif %}
               </div>
               <div class="pair-subject">{{ r[4] }}</div>
               <div class="pair-meta">
@@ -4550,7 +4596,7 @@ def teacher_page(name: str):
             rows = conn.execute(
                 "SELECT course, direction, day, time, subject, teacher, room, "
                 "week, class_type, date_range FROM schedule WHERE teacher=? "
-                f"ORDER BY {_DAY_ORDER_SQL}, time",
+                f"ORDER BY {_DAY_ORDER_SQL}, {_TIME_ORDER_SQL}",
                 (name,),
             ).fetchall()
     except Exception:
@@ -4571,7 +4617,7 @@ def room_page(name: str):
             rows = conn.execute(
                 "SELECT course, direction, day, time, subject, teacher, room, "
                 "week, class_type, date_range FROM schedule WHERE room=? "
-                f"ORDER BY {_DAY_ORDER_SQL}, time",
+                f"ORDER BY {_DAY_ORDER_SQL}, {_TIME_ORDER_SQL}",
                 (name,),
             ).fetchall()
     except Exception:
@@ -4742,14 +4788,14 @@ def calendar_ics():
                         "SELECT course, direction, day, time, subject, teacher, room, "
                         "week, class_type, date_range FROM schedule "
                         "WHERE course=? AND direction=? "
-                        "ORDER BY day, time",
+                        f"ORDER BY {_DAY_ORDER_SQL}, {_TIME_ORDER_SQL}",
                         (pref[0], pref[1]),
                     ).fetchall()
                 else:
                     pairs = conn.execute(
                         "SELECT course, direction, day, time, subject, teacher, room, "
                         "week, class_type, date_range FROM schedule "
-                        "ORDER BY course, direction, day, time"
+                        f"ORDER BY course, direction, {_DAY_ORDER_SQL}, {_TIME_ORDER_SQL}"
                     ).fetchall()
         except Exception:
             pass
@@ -4772,14 +4818,14 @@ def calendar_ics():
 
 _AUDIT_CONTENT = """
 <div class="page-title">
-  <h2>📜 Аудит-лог</h2>
+  <h1>📜 Аудит-лог</h1>
   <div style="color:var(--text-3);font-size:12.5px;">Найдено {{ rows|length }} событий{% if any_filter %} (с фильтрами){% endif %}</div>
 </div>
 
 <form method="get" class="card mb-3" style="padding:14px 18px;display:flex;gap:10px;align-items:end;flex-wrap:wrap;">
   <div>
     <label class="form-label" style="font-size:11px;margin-bottom:3px;">Группа действий</label>
-    <select name="action" class="form-select form-select-sm" style="min-width:160px;">
+    <select aria-label="Фильтр по действию" name="action" class="form-select form-select-sm" style="min-width:160px;">
       <option value="">— все —</option>
       {% for p in action_prefixes %}
         <option value="{{ p }}" {% if p == action_filter %}selected{% endif %}>{{ p }}.*</option>
@@ -4788,7 +4834,7 @@ _AUDIT_CONTENT = """
   </div>
   <div>
     <label class="form-label" style="font-size:11px;margin-bottom:3px;">Actor</label>
-    <select name="actor" class="form-select form-select-sm" style="min-width:200px;">
+    <select aria-label="Фильтр по пользователю" name="actor" class="form-select form-select-sm" style="min-width:200px;">
       <option value="">— все —</option>
       {% for uid in actor_ids %}
         <option value="{{ uid }}" {% if uid == actor_filter %}selected{% endif %}>
@@ -4799,12 +4845,12 @@ _AUDIT_CONTENT = """
   </div>
   <div>
     <label class="form-label" style="font-size:11px;margin-bottom:3px;">С даты</label>
-    <input type="date" name="since" value="{{ since_filter }}"
+    <input aria-label="Показывать события с даты" type="date" name="since" value="{{ since_filter }}"
            class="form-control form-control-sm" style="min-width:160px;">
   </div>
   <div>
     <label class="form-label" style="font-size:11px;margin-bottom:3px;">Лимит</label>
-    <select name="limit" class="form-select form-select-sm">
+    <select aria-label="Сколько записей показывать" name="limit" class="form-select form-select-sm">
       {% for n in [100, 300, 1000, 5000] %}
         <option value="{{ n }}" {% if n == limit_value %}selected{% endif %}>{{ n }}</option>
       {% endfor %}
@@ -4916,7 +4962,7 @@ def audit_page():
 
 _BROADCAST_CONTENT = """
 <div class="page-title">
-  <h2>📢 Рассылка подписчикам</h2>
+  <h1>📢 Рассылка подписчикам</h1>
 </div>
 
 {% if flash %}
