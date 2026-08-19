@@ -23,7 +23,17 @@ set -euo pipefail
 PROJECT_DIR="${PROJECT_DIR:-/opt/vkbot}"
 BACKUP_DIR="${1:-${BACKUP_DIR:-/var/backups/vkbot}}"
 KEEP_DAYS="${BACKUP_KEEP_DAYS:-14}"
-PYTHON="${PYTHON:-$PROJECT_DIR/.venv/bin/python}"
+# Интерпретатор ищем сами: каталог venv называют и .venv, и venv, а на части
+# машин проект живёт без него. Явный PYTHON=... переопределяет поиск.
+if [ -z "${PYTHON:-}" ]; then
+    for candidate in "$PROJECT_DIR/.venv/bin/python" "$PROJECT_DIR/venv/bin/python"                      "$(command -v python3 || true)"; do
+        if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+            PYTHON="$candidate"
+            break
+        fi
+    done
+fi
+PYTHON="${PYTHON:-}"
 
 # Те же переопределения, что читает приложение (vkbot/config.py и web_panel.py).
 # Иначе при DATA_DIR на отдельном томе бэкап честно отработает, скопировав ничего.
@@ -36,8 +46,9 @@ SCHEDULE_VERSIONS_DIR="${SCHEDULE_VERSIONS_DIR:-$DATA_DIR/schedule_versions}"
 STAMP="$(date +%F_%H%M%S)"
 DEST="$BACKUP_DIR/$STAMP"
 
-if [ ! -x "$PYTHON" ]; then
-    echo "Не найден интерпретатор $PYTHON — задайте PYTHON=..." >&2
+if [ -z "$PYTHON" ] || [ ! -x "$PYTHON" ]; then
+    echo "Не найден интерпретатор python (искал в $PROJECT_DIR/.venv, $PROJECT_DIR/venv и PATH)." >&2
+    echo "Задайте PYTHON=/путь/к/python и повторите." >&2
     exit 1
 fi
 
