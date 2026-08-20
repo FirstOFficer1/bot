@@ -52,3 +52,20 @@ def disable_all_for_user(uid: int) -> None:
     """
     with connect() as conn:
         conn.execute("UPDATE subscriptions SET disabled=1 WHERE user_id=?", (uid,))
+
+
+def delete_by_group(uid: int, course: int, direction: str) -> int:
+    """Удаляет подписку пользователя на конкретную группу.
+
+    Панель хранит выбранную группу в user_prefs, а уведомления бот шлёт по
+    этой таблице. Чтобы «выбрал группу» и «получаю напоминания» не разъезжались,
+    панель синхронизирует обе стороны — и при смене группы старую подписку
+    нужно снять поимённо, не трогая те, что человек завёл в боте сам.
+    """
+    with connect() as conn:
+        cur = conn.execute(
+            "DELETE FROM subscriptions "
+            "WHERE user_id=? AND course=? AND LOWER(direction)=LOWER(?)",
+            (uid, course, direction),
+        )
+        return cur.rowcount or 0

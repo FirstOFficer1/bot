@@ -51,6 +51,7 @@ from vkbot import config as _bot_config
 from vkbot import notifier, vk_names
 from vkbot.models import (
     audit, heartbeats, panel_codes, panel_remember, panel_users, seen_users,
+    subscriptions,
 )
 from vkbot.schedule import loader as schedule_loader
 
@@ -853,6 +854,31 @@ _BASE_TPL = """
       overflow: hidden; text-overflow: ellipsis;
     }
     .topbar-crumbs .sep { opacity: .45; }
+    /* Подписка на группу: название направления бывает под 90 символов,
+       поэтому плашка обязана переносить текст и жить в ширине экрана. */
+    .sub-chip {
+      display: flex; align-items: flex-start; gap: 10px;
+      max-width: 100%; box-sizing: border-box;
+      padding: 10px 12px; border-radius: 12px;
+      background: var(--accent-soft);
+      border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+    }
+    .sub-chip-text {
+      min-width: 0; flex: 1;
+      color: var(--text); font-size: 13.5px; line-height: 1.45;
+      overflow-wrap: anywhere;
+    }
+    .sub-chip-text strong { color: var(--accent); font-weight: 700; }
+    .sub-chip-x {
+      flex: none; appearance: none; border: 0; background: transparent;
+      color: var(--text-3); font-size: 15px; line-height: 1; cursor: pointer;
+      padding: 2px 4px; border-radius: 6px;
+    }
+    .sub-chip-x:hover {
+      color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 12%, transparent);
+    }
+
     /* Плашка чётности не сжимается и не переносится — она короткая и важная. */
     .week-chip {
       flex: none; white-space: nowrap;
@@ -1684,8 +1710,8 @@ _DASHBOARD_CONTENT = """
     <h1 class="mb-0 h3">{% if is_admin %}📊 Дашборд{% else %}📅 Моё расписание{% endif %}</h1>
     <div style="margin-top:4px;color:var(--text-3);font-size:13px;">
       Привет, {{ display_name or 'друг' }}!
-      {% if pref %}Сейчас твоя подписка — <strong style="color:var(--accent);">{{ pref[0] }} курс · {{ pref[1] }}</strong>.
-      {% else %}Подпишись на свой курс — и увидишь только нужные пары.
+      {% if pref %}Твоя группа — <strong style="color:var(--accent);">{{ pref[0] }} курс · {{ pref[1] }}</strong>, ниже только её пары.
+      {% else %}Сейчас видно пары всех курсов — отметь свою группу, чтобы остались только твои.
       {% endif %}
     </div>
   </div>
@@ -1704,22 +1730,28 @@ _DASHBOARD_CONTENT = """
   <div style="font-size:28px;">{% if pref %}🎯{% else %}🔔{% endif %}</div>
   <div style="flex:1;min-width:200px;">
     <div style="font-weight:700;font-size:14.5px;color:var(--text);">
-      {% if pref %}Подписка активна{% else %}Подпишись на курс и направление{% endif %}
+      {% if pref %}Твоя группа выбрана{% else %}Выбери свою группу — курс и направление{% endif %}
     </div>
     <div style="color:var(--text-3);font-size:12.5px;margin-top:2px;">
       {% if pref %}
-        Расписание сегодня/завтра показано для <strong style="color:var(--text-2);">{{ pref[0] }} курс · {{ pref[1] }}</strong>. Сменишь — обновим автоматически.
+        Твоя группа — <strong style="color:var(--text-2);">{{ pref[0] }} курс · {{ pref[1] }}</strong>.
+        Ниже показаны её пары на сегодня и завтра, в календарь попадают они же,
+        а бот присылает в VK напоминание за {{ notify_before_min }} минут до начала каждой пары.
+        Группу можно сменить или отключить — расписание остальных курсов никуда не денется.
       {% else %}
-        Без подписки видишь все пары всех курсов. С подпиской — только свои, плюс уведомления в боте.
+        Это как выбрать свою группу один раз, чтобы дальше не искать её в общем расписании.
+        Что изменится: ниже останутся только пары твоей группы вместо пар всех курсов,
+        в календарь попадут они же, а бот начнёт присылать в VK напоминание
+        за {{ notify_before_min }} минут до начала каждой пары. Отключить можно в любой момент.
       {% endif %}
     </div>
   </div>
   <button type="button" class="btn btn-primary btn-sm" onclick="document.getElementById('subscribeForm').style.display='block'; this.style.display='none';">
-    {% if pref %}🔄 Сменить{% else %}🔔 Подписаться{% endif %}
+    {% if pref %}🔄 Сменить группу{% else %}🔔 Выбрать группу{% endif %}
   </button>
   {% if pref %}
     <form method="post" action="{{ url_for('me_unsubscribe') }}" style="margin:0;"
-          onsubmit="return confirm('Отключить подписку? Сможешь подключить обратно в любой момент.');">
+          onsubmit="return confirm('Отключить напоминания и снова видеть пары всех курсов? Вернуть выбор можно в любой момент.');">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button class="btn btn-outline-secondary btn-sm" style="color:#DC2626;border-color:color-mix(in srgb,#DC2626 30%, var(--border));">✕ Отключить</button>
     </form>
@@ -1780,7 +1812,7 @@ _DASHBOARD_CONTENT = """
 
 {% if not pref and not is_admin %}
   <div class="card" style="padding:18px;text-align:center;color:var(--text-3);font-size:13.5px;">
-    💡 Совет: оформи подписку выше, чтобы видеть только пары своего направления. Полное расписание всегда доступно через кнопку «📅 Полное расписание».
+    💡 Выбор группы ничего не скрывает: расписание любого курса всегда открывается кнопкой «📅 Полное расписание» вверху страницы.
   </div>
 {% endif %}
 
@@ -2599,29 +2631,44 @@ _ME_CONTENT = """
   {# Подписки #}
   <div class="col-12">
     <div class="card">
-      <div class="card-header fw-semibold">🔔 Подписки на пары
+      <div class="card-header fw-semibold">🔔 Напоминания о парах
         <span class="badge bg-secondary ms-1">{{ subscriptions|length }}</span>
       </div>
       <div class="card-body">
+        <p class="text-muted" style="font-size:13px;margin-bottom:12px;">
+          {% if subscriptions %}
+            Бот присылает в VK напоминание за {{ notify_before_min }} минут до начала каждой пары
+            этих групп. Крестик отключает напоминания — расписание останется доступным.
+          {% else %}
+            Здесь появятся группы, за парами которых следит бот: он присылает в VK
+            напоминание за {{ notify_before_min }} минут до начала занятия.
+          {% endif %}
+        </p>
         {% if subscriptions %}
-          <div class="d-flex flex-wrap gap-2">
+          <div class="d-flex flex-column gap-2">
             {% for row in subscriptions %}
-              <span class="badge bg-primary fs-6 fw-normal py-2 px-3 d-inline-flex align-items-center gap-2">
-                {{ row[1] }} курс — {{ row[2] }}
-                <form method="post" action="{{ url_for('me_delete') }}" class="d-inline m-0"
+              {# Раньше это был bootstrap-badge: он не переносит текст, и длинное
+                 название направления уезжало за край экрана на телефоне. #}
+              <div class="sub-chip">
+                <span class="sub-chip-text">
+                  <strong>{{ row[1] }} курс</strong> · {{ row[2] }}
+                </span>
+                <form method="post" action="{{ url_for('me_delete') }}" class="m-0"
                       onsubmit="return confirm('Отписаться от {{ row[1] }} курс — {{ row[2] }}?');">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                   <input type="hidden" name="kind" value="subscription">
                   <input type="hidden" name="id" value="{{ row[0] }}">
-                  <button class="btn btn-sm p-0 border-0"
-                          style="background:transparent;color:white;opacity:.7;font-size:14px;line-height:1;"
-                          title="Отписаться">✕</button>
+                  <button class="sub-chip-x" type="submit" title="Отписаться"
+                          aria-label="Отписаться от {{ row[1] }} курс {{ row[2] }}">✕</button>
                 </form>
-              </span>
+              </div>
             {% endfor %}
           </div>
         {% else %}
-          <p class="text-muted mb-0">Нет подписок.</p>
+          <p class="mb-0" style="font-size:13px;">
+            Пока ни одной. Выбрать группу можно на
+            <a href="{{ url_for('dashboard') }}">главной странице</a>.
+          </p>
         {% endif %}
       </div>
     </div>
@@ -3028,9 +3075,17 @@ def me_subscribe():
     next_url = _safe_next(request.form.get("next"), url_for("dashboard"))
     if uid and course.isdigit() and direction:
         try:
+            # Панель хранит выбранную группу в user_prefs, а напоминания бот
+            # шлёт по таблице subscriptions. Раньше панель писала только первое
+            # и обещала уведомления, которых не было. Держим обе стороны вместе.
+            previous = _get_pref(uid)
             _set_pref(uid, int(course), direction)
+            if previous and (previous[0], previous[1].lower()) != (int(course), direction.lower()):
+                subscriptions.delete_by_group(uid, previous[0], previous[1])
+            if not subscriptions.exists(uid, int(course), direction):
+                subscriptions.add(uid, int(course), direction)
         except Exception:
-            pass
+            logging.exception("me_subscribe failed uid=%s", uid)
     return redirect(next_url)
 
 
@@ -3041,9 +3096,12 @@ def me_unsubscribe():
     next_url = _safe_next(request.form.get("next"), url_for("dashboard"))
     if uid:
         try:
+            previous = _get_pref(uid)
             _clear_pref(uid)
+            if previous:
+                subscriptions.delete_by_group(uid, previous[0], previous[1])
         except Exception:
-            pass
+            logging.exception("me_unsubscribe failed uid=%s", uid)
     return redirect(next_url)
 
 
@@ -3475,6 +3533,9 @@ def _type_short(value: str | None) -> str:
 
 
 app.jinja_env.globals["type_short"] = _type_short
+# Сколько минут до пары приходит уведомление — в текстах про подписку
+# должно стоять то же число, что реально использует воркер.
+app.jinja_env.globals["notify_before_min"] = _bot_config.CLASS_NOTIFY_BEFORE_MIN
 
 _DAY_ORDER_SQL = (
     "CASE day "
@@ -3657,14 +3718,29 @@ def me_delete():
         return redirect(url_for("me_page"))
     try:
         with _notes_conn() as conn:
+            # Если снимают напоминания по выбранной группе, надо убрать и саму
+            # отметку группы: иначе дашборд продолжит обещать уведомления,
+            # которых уже нет.
+            clears_pref = False
+            if kind == "subscription":
+                row = conn.execute(
+                    "SELECT course, direction FROM subscriptions WHERE id=? AND user_id=?",
+                    (item_id, uid),
+                ).fetchone()
+                pref = _get_pref(uid)
+                clears_pref = bool(
+                    row and pref and (pref[0], pref[1].lower()) == (row[0], (row[1] or "").lower())
+                )
             cur = conn.execute(
                 f"DELETE FROM {table} WHERE id=? AND user_id=?",
                 (item_id, uid),
             )
             conn.commit()
             audit.log(uid, f"me.delete_{kind}", f"id={item_id}", f"rows={cur.rowcount}")
+        if clears_pref:
+            _clear_pref(uid)
     except Exception:
-        pass
+        logging.exception("me_delete failed uid=%s kind=%s", uid, kind)
     return redirect(url_for("me_page"))
 
 

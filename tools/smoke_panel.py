@@ -182,6 +182,25 @@ def run(base_url: str, headed: bool, shots_dir: Path | None, excel: Path) -> int
                         text: chip.innerText.replace(/\s+/g, ' ').trim()};
             }"""
         )
+        # Профиль с длинным названием направления: bootstrap-badge не переносил
+        # текст, и подписка уезжала за край экрана вместе со всей страницей.
+        page.goto(f"{base_url}/me", wait_until="networkidle")
+        overflow = page.evaluate(
+            """() => {
+                const cw = document.documentElement.clientWidth;
+                const bad = [...document.querySelectorAll('*')]
+                    .filter(e => e.getBoundingClientRect().right > cw + 1);
+                return {count: bad.length,
+                        worst: bad.length ? (bad[0].className || bad[0].tagName) : '',
+                        scrollW: document.documentElement.scrollWidth, cw};
+            }"""
+        )
+        shot(page, shots_dir, "09-mobile-profile")
+        check(overflow["count"] == 0,
+              f"профиль на телефоне не выходит за экран ({overflow['worst']})")
+        check(overflow["scrollW"] <= overflow["cw"],
+              "в профиле нет горизонтальной прокрутки")
+
         shot(page, shots_dir, "08-mobile-header")
         check(layout["ok"], f"шапка на телефоне не накладывается {layout.get('reason', '')}")
         check(not layout["wide"], "на телефоне нет горизонтальной прокрутки")

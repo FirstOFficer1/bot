@@ -37,7 +37,10 @@ def _housekeeping() -> None:
 
 
 async def run(bot) -> None:
-    last_housekeeping = 0.0
+    # None, а не 0.0: `time.monotonic()` отсчитывается от старта системы, и на
+    # свежезагруженной машине разница с нулём меньше часа — уборка не запускалась
+    # бы весь первый час работы сервиса.
+    last_housekeeping: float | None = None
 
     while True:
         await asyncio.sleep(config.DEADLINE_POLL_SEC)
@@ -50,7 +53,10 @@ async def run(bot) -> None:
             model.cleanup_older_than(cutoff)
 
             monotonic = time.monotonic()
-            if monotonic - last_housekeeping >= config.HOUSEKEEPING_EVERY_SEC:
+            if (
+                last_housekeeping is None
+                or monotonic - last_housekeeping >= config.HOUSEKEEPING_EVERY_SEC
+            ):
                 last_housekeeping = monotonic
                 _housekeeping()
 

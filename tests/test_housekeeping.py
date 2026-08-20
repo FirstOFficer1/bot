@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from datetime import datetime, timedelta
 
 import pytest
@@ -60,21 +61,35 @@ def test_audit_cleanup_reports_count():
 
 @pytest.mark.asyncio
 async def test_housekeeping_runs_on_worker_tick(monkeypatch):
-    """Чистка должна вызываться из тика воркера, а не лежать мёртвым кодом."""
+    """Чистка должна вызываться из тика воркера, а не лежать мёртвым кодом.
+
+    Воркер — бесконечный цикл, поэтому тест обязан ограничивать себя сам:
+    прошлая версия глушила `asyncio.sleep` и ждала всплытия CancelledError —
+    в полном прогоне это оборачивалось зависанием всего набора.
+    """
     import asyncio
 
+    real_sleep = asyncio.sleep
     called: list[int] = []
     monkeypatch.setattr(deadlines, "_housekeeping", lambda: called.append(1))
     monkeypatch.setattr(deadlines.model, "list_pending", lambda: [])
 
-    async def _stop_after_first(_sec):
-        if called:
-            raise asyncio.CancelledError
+    async def _instant_sleep(_sec):
+        # Тик без пауз, но с уступкой циклу событий — иначе задача не отменится.
+        await real_sleep(0)
 
-    monkeypatch.setattr(asyncio, "sleep", _stop_after_first)
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
 
-    with pytest.raises(asyncio.CancelledError):
-        await deadlines.run(object())
+    task = asyncio.get_running_loop().create_task(deadlines.run(object()))
+    try:
+        for _ in range(200):
+            await real_sleep(0.005)
+            if called:
+                break
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
     assert called, "первый тик обязан запустить уборку"
 
