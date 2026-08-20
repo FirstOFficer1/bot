@@ -2520,8 +2520,13 @@ _ME_CONTENT = """
 </div>
 
 {% if pref %}
-<div class="alert alert-info d-inline-block mb-4 py-2">
-  📌 Сохранённое расписание: <strong>{{ pref[0] }} курс — {{ pref[1] }}</strong>
+{# Тот же смысл и то же название, что на дашборде: «твоя группа».
+   Было «Сохранённое расписание» синей плашкой — другой термин и чужой цвет. #}
+<div class="sub-chip d-inline-flex mb-4">
+  <span class="sub-chip-text">
+    📌 Твоя группа: <strong>{{ pref[0] }} курс · {{ pref[1] }}</strong><br>
+    <span style="color:var(--text-3);">Ниже — напоминания, которые бот шлёт по её парам.</span>
+  </span>
 </div>
 {% endif %}
 

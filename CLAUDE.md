@@ -70,6 +70,12 @@ python tools/smoke_panel.py --shots shots/    # also: --base-url, --headed, --ex
 It walks the whole admin path (OTP login → upload → preview → commit → schedule →
 audit → logout) and exits non-zero on the first broken step.
 
+`tools/check_live.py <code>` is the read-only counterpart for a **live** panel: it logs
+in with a real one-time code, checks page layout at phone width, pair ordering on real
+data and JS errors — but never writes. Never point `smoke_panel.py` at production: it
+uploads a demo schedule and would overwrite the real one. The login code is single-use,
+so a desktop and a mobile pass need two codes (`--mode desktop` / `--mode mobile`).
+
 ## Setup
 
 ```bash
