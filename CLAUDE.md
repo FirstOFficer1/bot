@@ -43,6 +43,10 @@ be set first; it also fills in `VK_TOKEN=""` (so `vk_names`/`notifier` never hit
 network) and a session-wide `db.init()` plus a per-test table wipe. Adding a table
 means adding it to that wipe list, or tests leak rows into each other.
 
+`pytest.ini` also sets `pythonpath = .` — without it only `python -m pytest` works
+(the `-m` form puts the CWD on `sys.path`), and the bare `pytest` that CI and the
+README use dies with `ModuleNotFoundError: No module named 'vkbot'`.
+
 `pytest.ini`: `asyncio_mode = strict` — async tests need an explicit
 `@pytest.mark.asyncio`; `DeprecationWarning` from `vkbot.*` and any `ResourceWarning`
 are **errors**, so a deprecated call or a leaked sqlite handle fails the suite instead
