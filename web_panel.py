@@ -25,6 +25,7 @@ import base64
 import hashlib
 import hmac
 import os
+import time
 import secrets
 import sqlite3
 import sys
@@ -417,17 +418,107 @@ def verify_vk_launch_sign(args, secret: str) -> bool:
     return hmac.compare_digest(expected, sign)
 
 
+# Правила VK Mini Apps, п. 1.1.2: внутри VK пользователь должен авторизоваться
+# бесшовно по vk_user_id из подписанных launch-параметров. Просить у него код,
+# почту или VK ID — избыточно, модерация такое не принимает.
+VK_APP_ID = _bot_config.int_env("VK_APP_ID")
+
+# Насколько старый запуск ещё пускаем внутрь. Подпись сама по себе не истекает,
+# а launch-URL вместе с ней остаётся в истории браузера и на скриншотах,
+# поэтому ограничиваем окно. Сутки — компромисс: сессия Mini App живёт долго,
+# а куки в iframe браузеры режут, и подпись может остаться единственным
+# доказательством личности на протяжении всего сеанса.
+VK_LAUNCH_MAX_AGE_SEC = _bot_config.int_env("VK_LAUNCH_MAX_AGE_SEC", 24 * 3600)
+
+
+def vk_launch_user_id(args, secret: str, *, now: float | None = None) -> int | None:
+    """VK ID пользователя из launch-параметров — или None, если верить нечему.
+
+    Требуем три вещи: валидную подпись, наш vk_app_id (чужое приложение не
+    должно пускать в нашу панель) и свежесть запуска по vk_ts.
+    """
+    if not verify_vk_launch_sign(args, secret):
+        return None
+
+    if VK_APP_ID:
+        try:
+            if int(args.get("vk_app_id", 0)) != VK_APP_ID:
+                return None
+        except (TypeError, ValueError):
+            return None
+
+    ts_raw = args.get("vk_ts")
+    if ts_raw:
+        try:
+            age = (now if now is not None else time.time()) - int(ts_raw)
+        except (TypeError, ValueError):
+            return None
+        if age > VK_LAUNCH_MAX_AGE_SEC or age < -300:
+            return None
+
+    try:
+        uid = int(args.get("vk_user_id", 0))
+    except (TypeError, ValueError):
+        return None
+    return uid or None
+
+
+# Подписи уже виденных запусков: только чтобы не дублировать запись о входе.
+# Живёт в памяти процесса — панель работает строго в одном (см. заголовок файла).
+_LAUNCH_SEEN: dict[str, float] = {}
+_LAUNCH_SEEN_TTL_SEC = 3600
+
+
+def _launch_is_new(sign: str) -> bool:
+    """True, если этот запуск ещё не отмечали в журнале за последний час."""
+    if not sign:
+        return False
+    now = time.time()
+    for old_sign, seen_at in list(_LAUNCH_SEEN.items()):
+        if now - seen_at > _LAUNCH_SEEN_TTL_SEC:
+            _LAUNCH_SEEN.pop(old_sign, None)
+    if sign in _LAUNCH_SEEN:
+        return False
+    _LAUNCH_SEEN[sign] = now
+    return True
+
+
 @app.before_request
 def _check_vk_sign():
-    """Мягкая проверка VK launch-подписи: не блокирует (доступ всё равно по OTP),
-    но логирует подделки в аудит — это и наблюдаемость, и галочка для модерации
-    VK, что приложение корректно обрабатывает launch-параметры."""
+    """Бесшовный вход из VK Mini App по подписанным launch-параметрам.
+
+    Подпись проверяется на каждом запросе, а не только при первом: куки в
+    iframe браузеры блокируют всё чаще, и тогда launch-параметры остаются
+    единственным, чем пользователь может себя подтвердить.
+
+    Подделки по-прежнему пишутся в аудит: это и наблюдаемость, и доказательство
+    для модерации VK, что приложение launch-параметры действительно проверяет.
+    """
+    g.vk_sign_ok = False
     if "sign" not in request.args:
         return
     secret = os.getenv("VK_APP_SECRET", "")
-    g.vk_sign_ok = verify_vk_launch_sign(request.args, secret)
-    if not g.vk_sign_ok:
+    uid = vk_launch_user_id(request.args, secret)
+    g.vk_sign_ok = uid is not None
+    if uid is None:
         audit.log(None, "vk.sign_invalid", _client_ip(), request.path)
+        return
+
+    g.vk_launch_uid = uid
+
+    # Сессию ставим всегда (это дёшево и идемпотентно), а вот запись в аудит и
+    # отметку о посещении — один раз на запуск. Если браузер режет куки в
+    # iframe, сессия не переживёт запрос, и без этой защиты каждый запрос
+    # писал бы «вход» в журнал.
+    if session.get("vk_id") != uid:
+        session.clear()
+        session["logged_in"] = True
+        session["vk_id"] = uid
+        session.permanent = True
+
+    if _launch_is_new(request.args.get("sign", "")):
+        seen_users.touch(uid)
+        audit.log(uid, "auth.login", "via VK Mini App", "seamless")
 
 
 @app.before_request
@@ -450,6 +541,12 @@ def _load_current_user():
     # Fallback: Flask-сессия (только для самого первого запроса после login)
     if session.get("logged_in") and session.get("vk_id"):
         g.user = _build_user(int(session["vk_id"]))
+        return
+    # Запуск из VK Mini App: подпись уже проверена в _check_vk_sign. Куки в
+    # iframe могут быть заблокированы браузером — тогда это единственный путь.
+    launch_uid = getattr(g, "vk_launch_uid", None)
+    if launch_uid:
+        g.user = _build_user(launch_uid)
 
 
 @app.after_request
@@ -2749,6 +2846,10 @@ def _render_page(title: str, content_tpl: str, **ctx):
 
 @app.route("/login", methods=["GET"])
 def login():
+    # Из VK Mini App пользователь уже опознан по подписанным launch-параметрам
+    # (правила VK Mini Apps, п. 1.1.2): показывать ему форму с кодом нельзя.
+    if getattr(g, "user", None):
+        return redirect(url_for("dashboard"))
     error = request.args.get("error")
     return render_template_string(_LOGIN_TPL, error=error)
 
