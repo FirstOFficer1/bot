@@ -180,3 +180,40 @@ def test_launch_params_are_validated(anon):
     resp = anon.get(f"/me?{forged}")
 
     assert resp.status_code in (302, 303), "подделанная подпись не должна пускать"
+
+
+# ── 1.1.4: свой документ должен описывать реальные процессы ──────────────────
+
+def test_privacy_names_the_operator(anon):
+    """Типовая политика требует, чтобы разработчик был назван в приложении.
+
+    Мы применяем собственный документ (типовая, п. 2.1, на таких не
+    распространяется) — значит назвать оператора обязаны сами.
+    """
+    html = anon.get("/privacy").get_data(as_text=True)
+
+    assert "Кто обрабатывает данные" in html
+    assert web_panel.DEVELOPER_NAME in html
+    assert "{{" not in html, "шаблонные подстановки должны быть отрендерены"
+
+
+def test_privacy_retention_matches_the_code(anon):
+    """Сроки в документе не должны расходиться с тем, что делает уборка."""
+    from vkbot import config
+
+    html = anon.get("/privacy").get_data(as_text=True)
+
+    for value in (config.AUDIT_KEEP_DAYS, config.SENT_NOTIFS_CLEANUP_DAYS,
+                  config.DEADLINE_CLEANUP_DAYS):
+        assert str(value) in html, f"срок {value} не указан в политике"
+
+
+def test_privacy_describes_self_service_deletion(anon):
+    """Кнопка удаления появилась — обещание в документе должно совпадать."""
+    import re
+
+    # В исходнике текста есть переносы строк — сравниваем по смыслу, не побайтно.
+    html = re.sub(r"\s+", " ", anon.get("/privacy").get_data(as_text=True))
+
+    assert "Удалить мои данные" in html
+    assert "напишите боту" not in html.lower(), "старое обещание про переписку устарело"
