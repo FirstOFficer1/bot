@@ -76,6 +76,12 @@ data and JS errors — but never writes. Never point `smoke_panel.py` at product
 uploads a demo schedule and would overwrite the real one. The login code is single-use,
 so a desktop and a mobile pass need two codes (`--mode desktop` / `--mode mobile`).
 
+`tools/check_miniapp.py` checks the thing only a browser can see: it serves a fake
+parent page on `vk.ru` and on `vk.com`, embeds the live panel in an iframe and waits
+for `VKWebAppInit` over `postMessage`. That is exactly what VK does before deciding
+to show "Приложение не инициализировано". No login needed, read-only, and it catches
+CSP/framing breakage that unit tests cannot see because it lives in nginx.
+
 ## Setup
 
 ```bash
