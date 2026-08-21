@@ -1,0 +1,15 @@
+# Файлы, которые исполняет Linux, обязаны лежать с LF независимо от того, с какой
+# машины их редактировали. Пришедший с Windows CR ломает их молча и по-разному:
+# bash видит имя интерпретатора как «/bin/bash\r» и падает с «no such file»,
+# systemd берёт CR в значение ExecStart, nginx — в имя зоны limit_req.
+*.sh        text eol=lf
+*.service   text eol=lf
+*.timer     text eol=lf
+*.conf      text eol=lf
+Procfile    text eol=lf
+
+# Скриншоты смоука в репозиторий не кладём (см. .gitignore), но если попадут —
+# пусть git не пытается чинить в них переводы строк.
+*.png       binary
+*.xlsx      binary
+*.svg       text eol=lf
