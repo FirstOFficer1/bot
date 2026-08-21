@@ -324,13 +324,20 @@ The smoke job needs no secrets — `VK_TOKEN` is empty and every DB goes to a te
 - `README.md` — quick start, panel login, first schedule upload, deploy commands.
 - `docs/LAUNCH.md` — pre-launch checklist and the standing list of known limitations;
   update it when you fix or add one.
-- `deploy/` — systemd units (`vkbot.service`, `vkpanel.service`, project at `/opt/vkbot`),
-  `nginx-panel.conf`, and the backup pair `vkbot-backup.service`/`.timer` driving
+- `deploy/` — mirrors the live machine, so treat it as the source of truth rather
+  than a template: the project lives at **`/root/vkbot`** with its venv in `venv/`,
+  the panel runs under **gunicorn on 127.0.0.1:8080** (`-w 1` — the in-memory state
+  above forbids a second worker) and `python web_panel.py`/waitress is only the local
+  and CI path. That directory is hardcoded in `vkbot.service`, `vkpanel.service`,
+  `vkbot-backup.service` and `backup.sh`'s `PROJECT_DIR` — moving the project means
+  editing all four. `nginx-panel.conf` needs `panel-ratelimit.conf` in `conf.d/`
+  beside it (the `limit_req_zone` only works in the http context, and nginx refuses
+  to start without it). The backup pair `vkbot-backup.service`/`.timer` drives
   `backup.sh` (online SQLite copies + `schedule_versions.tar.gz`, integrity-checked,
   14-day rotation). Changing `PANEL_MAX_UPLOAD_MB` means changing
-  `client_max_body_size` there too.
+  `client_max_body_size` too — nginx smaller than the app turns a readable error into
+  a bare 413.
 - Every timestamp — domain and bookkeeping alike — is written through
-  `config.now_msk()`, so the server's own timezone doesn't matter (prod runs UTC and
-  shares the box with another service, so it can't be changed for us). A guard test
+  `config.now_msk()`, so the server's own timezone doesn't matter. A guard test
   (`tests/test_timestamps.py`) fails the suite if a bare `datetime.now()` reappears
   in `vkbot/`, `web_panel.py` or `import_excel.py`.

@@ -20,7 +20,7 @@
 
 set -euo pipefail
 
-PROJECT_DIR="${PROJECT_DIR:-/opt/vkbot}"
+PROJECT_DIR="${PROJECT_DIR:-/root/vkbot}"
 BACKUP_DIR="${1:-${BACKUP_DIR:-/var/backups/vkbot}}"
 KEEP_DAYS="${BACKUP_KEEP_DAYS:-14}"
 # Интерпретатор ищем сами: каталог venv называют и .venv, и venv, а на части

@@ -7,20 +7,20 @@
 [Unit]
 Description=Backup vkbot databases and schedule versions
 # Бэкап не имеет смысла до монтирования дисков с данными.
-RequiresMountsFor=/opt/vkbot /var/backups
+RequiresMountsFor=/root/vkbot /var/backups
 
 [Service]
 Type=oneshot
-WorkingDirectory=/opt/vkbot
+WorkingDirectory=/root/vkbot
 # Пути к базам берём из того же .env, что и сервисы: при DATA_DIR на volume
 # базы лежат не в каталоге проекта, и бэкап без этого копировал бы пустоту.
-EnvironmentFile=-/opt/vkbot/.env
-Environment=PROJECT_DIR=/opt/vkbot
+EnvironmentFile=-/root/vkbot/.env
+Environment=PROJECT_DIR=/root/vkbot
 Environment=BACKUP_DIR=/var/backups/vkbot
 Environment=BACKUP_KEEP_DAYS=14
 # Через bash, а не напрямую: бит +x теряется при клонировании репозитория
 # с Windows-машины, и юнит молча падал бы с 203/EXEC.
-ExecStart=/bin/bash /opt/vkbot/deploy/backup.sh
+ExecStart=/bin/bash /root/vkbot/deploy/backup.sh
 
 StandardOutput=journal
 StandardError=journal
@@ -38,5 +38,5 @@ ProtectHome=read-only
 # С ProtectHome=read-only и проектом в /root это давало «unable to open
 # database file» на первом же прогоне. Если данные вынесены через DATA_DIR —
 # добавьте и тот каталог.
-ReadWritePaths=-/var/backups/vkbot /opt/vkbot
+ReadWritePaths=-/var/backups/vkbot /root/vkbot
 ExecStartPre=/bin/mkdir -p /var/backups/vkbot

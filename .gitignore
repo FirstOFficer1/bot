@@ -1,5 +1,9 @@
 # Секреты и данные
 .env
+# Копии, которые остаются от обновлений на сервере (.env.before_update_...).
+# Именно копия секрета, попавшая в репозиторий, обычно и утекает.
+.env.*
+!.env.example
 *.db
 *.db-wal
 *.db-shm
@@ -8,10 +12,19 @@
 schedule_versions/
 .schedule_reload
 demo_schedule.xlsx
+
+# Скриншоты из tools/smoke_panel.py и tools/check_live.py --shots.
+# Каталог задаётся флагом, поэтому сюда попадают и произвольные имена:
+# три таких png уже успели уехать в историю.
 shots/
+*.png
 
 # Python
 __pycache__/
 *.pyc
 .venv/
+venv/
 .pytest_cache/
+
+# Кэш vkbottle (создаётся рядом с ботом при запуске)
+.vkbottle/

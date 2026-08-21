@@ -101,7 +101,7 @@ ruff check .                         # линтер, тот же конфиг г
 Готовые конфиги — в [deploy/](deploy/):
 
 ```bash
-# на сервере, проект в /opt/vkbot
+# на сервере, проект в /root/vkbot
 cp deploy/vkbot.service deploy/vkpanel.service /etc/systemd/system/
 systemctl daemon-reload && systemctl enable --now vkbot vkpanel
 journalctl -u vkbot -u vkpanel -f
@@ -109,15 +109,28 @@ journalctl -u vkbot -u vkpanel -f
 cp deploy/vkbot-backup.service deploy/vkbot-backup.timer /etc/systemd/system/
 systemctl daemon-reload && systemctl enable --now vkbot-backup.timer
 
-cp deploy/nginx-panel.conf /etc/nginx/sites-available/vkpanel
-ln -s /etc/nginx/sites-available/vkpanel /etc/nginx/sites-enabled/
+cp deploy/panel-ratelimit.conf /etc/nginx/conf.d/
+cp deploy/nginx-panel.conf /etc/nginx/sites-available/elschedule.conf
+ln -s /etc/nginx/sites-available/elschedule.conf /etc/nginx/sites-enabled/
 nginx -t && systemctl reload nginx
-certbot --nginx -d elschedule.ru
+certbot --nginx -d elschedule.ru -d www.elschedule.ru
+```
+
+Обновление уже развёрнутого:
+
+```bash
+cd /root/vkbot && git pull && systemctl restart vkpanel vkbot
+curl -s -o /dev/null -w '%{http_code}
+' https://elschedule.ru/healthz   # ждём 200
 ```
 
 Бэкапы ставятся оттуда же: `vkbot-backup.service` и таймер к нему — ежедневно
-в 04:30, хранение 14 дней, с проверкой целостности копий. Пути в юните указывают
-на `/opt/vkbot` — при другом каталоге установки поправьте их перед копированием.
+в 04:30, хранение 14 дней, с проверкой целостности копий.
+
+Каталог `/root/vkbot` зашит в оба юнита, в `vkbot-backup.service` и в
+`PROJECT_DIR` у `deploy/backup.sh` — переносите проект, правьте все четыре.
+Панель в проде поднимает gunicorn (`-w 1`, порт 8080), а `python web_panel.py`
+с waitress остаётся для локального запуска и смоук-теста.
 
 Два момента, которые легко упустить:
 

@@ -5,8 +5,10 @@
 
 ## 1. Подготовка окружения
 
-- [ ] Проект развёрнут в `/opt/vkbot` (или поправлены пути в `deploy/*.service`).
-- [ ] `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`
+- [ ] Проект развёрнут в `/root/vkbot` — этот путь зашит в `deploy/*.service`
+      и в `deploy/backup.sh`. Другой каталог означает правку всех четырёх файлов
+      разом, иначе бэкап или сервисы будут смотреть не туда.
+- [ ] `python3 -m venv venv && venv/bin/pip install -r requirements.txt`
 - [ ] `cp .env.example .env`, заполнены `VK_TOKEN`, `ADMIN_ID`, `PANEL_SECRET`.
 - [ ] `PANEL_SECRET` — случайные 64 hex-символа, не переиспользован откуда-то ещё.
       Его смена разлогинивает всех.
@@ -39,7 +41,7 @@
       (буква `с` кириллическая) и каталог `schedule_versions/` — без последнего
       не работает откат расписания.
 - [ ] Владелец файлов — пользователь, под которым идут сервисы; каталог проекта
-      доступен ему на запись (`ReadWritePaths=/opt/vkbot` в юнитах).
+      доступен ему на запись (`ReadWritePaths=/root/vkbot` в юнитах).
 
 ## 2. Сеть и TLS
 
@@ -47,7 +49,9 @@
 - [ ] nginx поднят по `deploy/nginx-panel.conf`, `nginx -t` проходит.
 - [ ] Сертификат выпущен (`certbot --nginx -d <домен>`), автопродление активно.
 - [ ] `client_max_body_size` в nginx не меньше `PANEL_MAX_UPLOAD_MB`.
-- [ ] Порт 5000 закрыт извне (`ufw status` / firewall провайдера).
+- [ ] Порт панели (8080) закрыт извне (`ufw status` / firewall провайдера).
+- [ ] Зона лимита на месте: `cp deploy/panel-ratelimit.conf /etc/nginx/conf.d/`.
+      Без неё nginx не поднимется вовсе — `unknown limit_req zone "panel_rl"`.
 
 ## 3. Запуск сервисов
 
@@ -101,11 +105,9 @@
 
 - [ ] Установлен таймер: `cp deploy/vkbot-backup.{service,timer} /etc/systemd/system/`,
       `systemctl daemon-reload && systemctl enable --now vkbot-backup.timer`.
-- [ ] **Пути в юните поправлены под каталог установки.** В репозитории он
-      рассчитан на `/opt/vkbot`; если проект лежит иначе, перед копированием:
-      `sed 's#/opt/vkbot#/root/vkbot#g' deploy/vkbot-backup.service > /etc/systemd/system/vkbot-backup.service`.
-      Каталог с базами обязан быть в `ReadWritePaths`: SQLite в WAL-режиме
-      открывает базу на запись даже когда её только читают.
+- [ ] Каталог с базами есть в `ReadWritePaths` юнита: SQLite в WAL-режиме
+      открывает базу на запись даже когда её только читают. При `DATA_DIR`
+      на отдельном томе туда же нужно дописать и его.
 - [ ] Разовый прогон прошёл: `systemctl start vkbot-backup.service`,
       `journalctl -u vkbot-backup -n 30` — есть строка `integrity_check ok`.
 - [ ] В `/var/backups/vkbot/<дата>/` лежат обе базы и `schedule_versions.tar.gz`

@@ -3,7 +3,9 @@
 #   systemctl daemon-reload && systemctl enable --now vkbot
 #   journalctl -u vkbot -f
 #
-# Пути ниже рассчитаны на /opt/vkbot — поправьте, если проект лежит иначе.
+# Пути соответствуют боевой машине: проект в /root/vkbot, venv внутри него.
+# Менять каталог — значит поправить его здесь, в vkpanel.service,
+# vkbot-backup.service и в PROJECT_DIR у deploy/backup.sh.
 
 [Unit]
 Description=VK schedule bot
@@ -12,9 +14,11 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/vkbot
-EnvironmentFile=/opt/vkbot/.env
-ExecStart=/opt/vkbot/.venv/bin/python -m vkbot
+WorkingDirectory=/root/vkbot
+# .env читает сам процесс через python-dotenv — из рабочего каталога.
+# EnvironmentFile здесь не нужен и вреден: systemd разбирает файл по своим
+# правилам (кавычки, знак #) и на первой же непонятой строке валит юнит.
+ExecStart=/root/vkbot/venv/bin/python vk_bot.py
 Restart=always
 RestartSec=5
 # Бот держит состояние диалогов в SQLite, поэтому мягкая остановка предпочтительнее.
@@ -30,8 +34,11 @@ SyslogIdentifier=vkbot
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
+# Проект лежит в /root, а ProtectHome делает его доступным только на чтение —
+# базы открываются на запись даже для чтения (SQLite в WAL создаёт -wal и -shm),
+# и без ReadWritePaths ниже бот падал бы на «unable to open database file».
 ProtectHome=read-only
-ReadWritePaths=/opt/vkbot
+ReadWritePaths=/root/vkbot
 
 [Install]
 WantedBy=multi-user.target

@@ -21,5 +21,9 @@ requests>=2.31
 # ── Веб-панель ───────────────────────────────────────────────────────────────
 Flask>=3.0,<4
 Flask-WTF>=1.2          # CSRF-защита; без неё web_panel.py падает на импорте
-waitress>=3.0           # WSGI-сервер для прода (строго один процесс, см. web_panel.py)
+waitress>=3.0           # WSGI-сервер для `python web_panel.py` (локально, CI, смоук)
+# Им панель запущена в проде (deploy/vkpanel.service). Маркер платформы —
+# не косметика: под Windows gunicorn ставится, но падает на импорте fcntl,
+# так что на машине разработчика он только мешает.
+gunicorn>=21.2; sys_platform != "win32"
 Werkzeug>=3.0           # ProxyFix импортируется напрямую (PANEL_TRUSTED_PROXIES)

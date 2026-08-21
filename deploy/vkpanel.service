@@ -7,17 +7,20 @@
 # _PENDING_UPLOADS / _LAST_BROADCAST / _ICS_CACHE живут в памяти процесса, поэтому
 # несколько воркеров сломают загрузку расписания («unknown or expired token»).
 # Масштабировать можно только после переноса этого состояния в БД.
+# Отсюда «-w 1»: потоки (--threads) состояние разделяют, процессы — нет.
+#
+# Порт 8080 должен совпадать с proxy_pass в deploy/nginx-panel.conf.
 
 [Unit]
-Description=VK bot admin panel
-After=network-online.target
+Description=VK bot admin panel (gunicorn)
+After=network-online.target vkbot.service
 Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/vkbot
-EnvironmentFile=/opt/vkbot/.env
-ExecStart=/opt/vkbot/.venv/bin/python web_panel.py
+WorkingDirectory=/root/vkbot
+# .env читает сам процесс через python-dotenv — см. комментарий в vkbot.service.
+ExecStart=/root/vkbot/venv/bin/gunicorn -b 127.0.0.1:8080 -w 1 -k gthread --threads 4 --timeout 60 --access-logfile - --error-logfile - web_panel:app
 Restart=always
 RestartSec=5
 TimeoutStopSec=20
@@ -29,8 +32,9 @@ SyslogIdentifier=vkpanel
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
+# См. vkbot.service: проект в /root, писать в него нужно (SQLite в WAL).
 ProtectHome=read-only
-ReadWritePaths=/opt/vkbot
+ReadWritePaths=/root/vkbot
 
 [Install]
 WantedBy=multi-user.target
