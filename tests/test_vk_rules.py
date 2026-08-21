@@ -241,6 +241,16 @@ def test_privacy_names_the_operator(anon):
     assert "{{" not in html, "шаблонные подстановки должны быть отрендерены"
 
 
+@pytest.mark.parametrize("path", ["/privacy", "/terms"])
+def test_legal_documents_name_the_operator(anon, path):
+    """Оператор должен быть назван в обоих документах, а не только в политике:
+    соглашение — это тоже документ, который принимают до начала использования."""
+    html = anon.get(path).get_data(as_text=True)
+
+    assert web_panel.DEVELOPER_NAME in html, "не сказано, кто предоставляет сервис"
+    assert "{{" not in html, "шаблонные подстановки должны быть отрендерены"
+
+
 def test_privacy_retention_matches_the_code(anon):
     """Сроки в документе не должны расходиться с тем, что делает уборка."""
     from vkbot import config
