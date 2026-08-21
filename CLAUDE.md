@@ -267,6 +267,27 @@ are in-memory module state. A second worker breaks schedule uploads ("unknown or
 expired token") and scrambles broadcast progress. Move that state into the DB before
 scaling out.
 
+### VK Mini App
+
+The panel runs inside VK as a Mini App, and the platform rules
+(https://dev.vk.com/ru/mini-apps-rules) are enforceable requirements, not advice —
+moderation rejects on them. What the code does for each:
+
+- **1.2.2 / 1.1.2 — seamless auth.** `vk_launch_user_id()` authenticates from signed
+  launch params: signature, our `vk_app_id`, and `vk_ts` freshness must all hold.
+  Asking a VK user for a code, email or VK ID is a rule violation, so `/login`
+  redirects inside when the launch is signed. The OTP path stays for plain browsers.
+  Checked on **every** request, not just the first — browsers block iframe cookies.
+- **1.1.4 / 2.4.1** — links to terms, privacy and support live in the in-app footer
+  (`.app-foot`), not only on the login page a VK user never sees.
+- **2.2.1** — VK Bridge is loaded and `VKWebAppInit` is sent from both templates; CSP
+  must keep allowing `unpkg.com`, or the bridge silently never initializes.
+- **1.2.6** — `_rate_limit()` caps requests per IP (`PANEL_RATE_LIMIT_RPM`), skipping
+  `/healthz` and `/static/`.
+- **3.2.2** — `viewport-fit=cover` plus `env(safe-area-inset-*)` padding.
+
+`tests/test_vk_rules.py` pins all of the above.
+
 ### Health checks
 
 `/healthz` is public (a monitor calls it) and returns 200 only when `notes.db` opens

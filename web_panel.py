@@ -31,6 +31,7 @@ import sqlite3
 import sys
 import tempfile
 import threading
+from collections import defaultdict, deque
 from functools import wraps
 from pathlib import Path
 
@@ -40,6 +41,7 @@ from flask import (
     abort,
     g,
     jsonify,
+    make_response,
     redirect,
     render_template_string,
     request,
@@ -421,6 +423,13 @@ def verify_vk_launch_sign(args, secret: str) -> bool:
 # Правила VK Mini Apps, п. 1.1.2: внутри VK пользователь должен авторизоваться
 # бесшовно по vk_user_id из подписанных launch-параметров. Просить у него код,
 # почту или VK ID — избыточно, модерация такое не принимает.
+# Правила VK Mini Apps, п. 2.4.1: в приложении должен быть доступный способ
+# связи. Ведём в диалог с сообществом бота — это и есть наша поддержка.
+VK_GROUP_ID = _bot_config.int_env("VK_GROUP_ID")
+SUPPORT_URL = os.getenv("SUPPORT_URL") or (
+    f"https://vk.com/im?sel=-{VK_GROUP_ID}" if VK_GROUP_ID else "https://vk.com/im"
+)
+
 VK_APP_ID = _bot_config.int_env("VK_APP_ID")
 
 # Насколько старый запуск ещё пускаем внутрь. Подпись сама по себе не истекает,
@@ -481,6 +490,49 @@ def _launch_is_new(sign: str) -> bool:
         return False
     _LAUNCH_SEEN[sign] = now
     return True
+
+
+# Правила VK Mini Apps, п. 1.2.6: приложение должно ограничивать частоту
+# запросов и переживать их превышение. До сих пор лимит стоял только на входе
+# по коду — то есть флуд по любой другой странице ничем не сдерживался.
+# Счётчик в памяти процесса: панель работает строго в одном (см. заголовок).
+PANEL_RATE_LIMIT_RPM = _bot_config.int_env("PANEL_RATE_LIMIT_RPM", 240)
+_req_hits: dict[str, deque] = defaultdict(deque)
+
+
+def _too_many_requests(ip: str) -> bool:
+    """True, если этот IP превысил лимит запросов за минуту."""
+    if PANEL_RATE_LIMIT_RPM <= 0:
+        return False
+    now = time.time()
+    hits = _req_hits[ip]
+    while hits and now - hits[0] > 60:
+        hits.popleft()
+    if len(hits) >= PANEL_RATE_LIMIT_RPM:
+        return True
+    hits.append(now)
+    if len(_req_hits) > 5000:          # чистим словарь, чтобы не рос бесконечно
+        for stale_ip in [k for k, v in _req_hits.items() if not v or now - v[-1] > 300]:
+            _req_hits.pop(stale_ip, None)
+    return False
+
+
+@app.before_request
+def _rate_limit():
+    """Общий лимит частоты запросов на IP.
+
+    Мониторинг и статику не считаем: /healthz дёргают по расписанию, а картинки
+    и шрифты — часть одной страницы, и на них лимит расходовать бессмысленно.
+    """
+    if app.config.get("TESTING"):
+        return
+    if request.path.startswith("/static/") or request.path == "/healthz":
+        return
+    if _too_many_requests(_client_ip()):
+        return make_response(
+            "Слишком много запросов. Подождите минуту и повторите.", 429,
+            {"Retry-After": "60", "Content-Type": "text/plain; charset=utf-8"},
+        )
 
 
 @app.before_request
@@ -977,6 +1029,25 @@ _BASE_TPL = """
     }
 
     /* Плашка чётности не сжимается и не переносится — она короткая и важная. */
+    .app-foot {
+      margin-top: 22px; padding-top: 14px;
+      border-top: 1px solid var(--border);
+      display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+      font-size: 12.5px; color: var(--text-3);
+    }
+    .app-foot a { color: var(--text-3); text-decoration: underline; text-underline-offset: 2px; }
+    .app-foot a:hover { color: var(--accent); }
+
+    /* Безопасные зоны выреза и «домашней» полосы: viewport-fit=cover отдаёт нам
+       всю площадь экрана, включая области под системными элементами. */
+    .topbar { padding-top: env(safe-area-inset-top, 0px); }
+    .page {
+      padding-left: max(var(--space-7), env(safe-area-inset-left, 0px));
+      padding-right: max(var(--space-7), env(safe-area-inset-right, 0px));
+      padding-bottom: max(var(--space-7), calc(env(safe-area-inset-bottom, 0px) + 16px));
+    }
+    .sb-foot { padding-bottom: max(14px, env(safe-area-inset-bottom, 0px)); }
+
     .week-chip {
       flex: none; white-space: nowrap;
       background: var(--accent-soft); color: var(--accent); border-color: transparent;
@@ -1538,6 +1609,16 @@ _BASE_TPL = """
     </div>
     <div class="page">
       {{ content | safe }}
+      {# Правила VK Mini Apps: п. 1.1.4 — документы должны быть доступны внутри
+         приложения, п. 2.4.1 — как и способ связи. Внутри VK пользователь
+         входит бесшовно и страницу входа с этими ссылками не видит вовсе. #}
+      <footer class="app-foot">
+        <a href="{{ url_for('privacy') }}">Политика конфиденциальности</a>
+        <span aria-hidden="true">·</span>
+        <a href="{{ url_for('terms') }}">Условия использования</a>
+        <span aria-hidden="true">·</span>
+        <a href="{{ support_url }}" target="_blank" rel="noopener">Написать в поддержку</a>
+      </footer>
     </div>
   </main>
 </div>
@@ -3681,6 +3762,7 @@ def _type_short(value: str | None) -> str:
 
 
 app.jinja_env.globals["type_short"] = _type_short
+app.jinja_env.globals["support_url"] = SUPPORT_URL
 # Сколько минут до пары приходит уведомление — в текстах про подписку
 # должно стоять то же число, что реально использует воркер.
 app.jinja_env.globals["notify_before_min"] = _bot_config.CLASS_NOTIFY_BEFORE_MIN
