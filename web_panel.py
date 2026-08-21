@@ -51,7 +51,7 @@ from vkbot import config as _bot_config
 from vkbot import notifier, vk_names
 from vkbot.models import (
     audit, heartbeats, panel_codes, panel_remember, panel_users, seen_users,
-    subscriptions,
+    subscriptions, user_data,
 )
 from vkbot.schedule import loader as schedule_loader
 
@@ -2679,6 +2679,48 @@ _ME_CONTENT = """
     </div>
   </div>
 
+  {# Удаление всех данных — обещание из политики конфиденциальности, которое
+     до сих пор выполнялось вручную через переписку с администратором. #}
+  <div class="col-12">
+    <div class="card" style="border-color:color-mix(in srgb,#DC2626 30%,var(--border));">
+      <div class="card-header fw-semibold" style="color:#DC2626;">🗑 Удалить мои данные</div>
+      <div class="card-body">
+        {% if data_counts %}
+          <p style="font-size:13px;margin-bottom:10px;">
+            Сейчас о тебе хранится:
+            {% for table, n in data_counts.items() %}<span class="chip" style="margin:2px 4px 2px 0;">{{ data_labels[table] }} — {{ n }}</span>{% endfor %}
+          </p>
+        {% else %}
+          <p style="font-size:13px;margin-bottom:10px;">Кроме записи о входе, о тебе ничего не хранится.</p>
+        {% endif %}
+        <p style="font-size:13px;color:var(--text-3);">
+          Кнопка удаляет заметки, напоминания, дедлайны, подписки, выбранную группу
+          и сессии входа — сразу и без возможности восстановить. Бот про тебя забудет:
+          уведомления о парах перестанут приходить, диалог начнётся с нуля.
+          В журнале безопасности останется запись о самом факте удаления — она
+          нужна, чтобы можно было разобраться в спорной ситуации, и пропадёт
+          вместе с остальным журналом через {{ audit_keep_days }} дней.
+        </p>
+        {% if is_env_owner %}
+          <p style="font-size:13px;color:var(--text-3);margin-bottom:0;">
+            Ты владелец из <code>.env</code> — панель не может удалить твою роль.
+            Данные удалятся, роль останется до правки файла на сервере.
+          </p>
+        {% endif %}
+        <form method="post" action="{{ url_for('me_delete_all') }}" class="mt-2"
+              onsubmit="return confirm('Удалить все данные без возможности восстановить?');">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:10px;">
+            <input type="checkbox" name="confirm" value="yes" required>
+            Понимаю, что данные не восстановить
+          </label>
+          <button class="btn btn-sm" type="submit"
+                  style="background:#DC2626;color:#fff;border:0;">Удалить всё обо мне</button>
+        </form>
+      </div>
+    </div>
+  </div>
+
 </div>
 """
 
@@ -3697,7 +3739,42 @@ def me_page():
         deadlines=data.get("deadlines", []),
         subscriptions=data.get("subscriptions", []),
         pref=data.get("pref"),
+        data_counts=user_data.count_all(vk_id) if vk_id else {},
+        data_labels=user_data.LABELS,
+        audit_keep_days=_bot_config.AUDIT_KEEP_DAYS,
+        is_env_owner=vk_id in OWNER_VK_IDS,
     )
+
+
+@app.route("/me/delete-all", methods=["POST"])
+@login_required
+def me_delete_all():
+    """Удаляет все данные пользователя по его собственному запросу.
+
+    Политика конфиденциальности обещает такое удаление; до сих пор оно шло
+    перепиской с администратором. Сессию гасим здесь же: токены «запомнить
+    меня» удалены, продолжать сессию было бы нечестно.
+    """
+    uid = _current_vk_id()
+    if not uid:
+        return redirect(url_for("login"))
+    if (request.form.get("confirm") or "") != "yes":
+        return redirect(_with_flash(url_for("me_page"), "Нужно подтвердить удаление", "danger"))
+
+    try:
+        removed = user_data.purge(uid)
+    except Exception:
+        logging.exception("me: не удалось удалить данные пользователя")
+        return redirect(_with_flash(
+            url_for("me_page"), "Не удалось удалить данные, попробуй ещё раз", "danger"))
+
+    audit.log(uid, "me.delete_all", f"id={uid}",
+              ", ".join(f"{k}={v}" for k, v in removed.items()) or "нечего было удалять")
+    session.clear()
+    resp = redirect(_with_flash(url_for("login"),
+                                "Все твои данные удалены. Бот про тебя забыл.", "success"))
+    resp.delete_cookie(_REMEMBER_COOKIE)
+    return resp
 
 
 _ME_DELETABLE_TABLES = {
