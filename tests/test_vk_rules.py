@@ -83,8 +83,9 @@ def test_csp_allows_vk_bridge(anon):
 
 # ── 3.2.2: безопасные зоны экрана ────────────────────────────────────────────
 
-def test_safe_areas_are_respected(client):
-    html = client.get("/").get_data(as_text=True)
+@pytest.mark.parametrize("page", ["app", "login"])
+def test_safe_areas_are_respected(client, anon, page):
+    html = (client.get("/") if page == "app" else anon.get("/login")).get_data(as_text=True)
 
     assert "viewport-fit=cover" in html, "без этого системные зоны не отдаются приложению"
     assert "env(safe-area-inset" in html, "контент уедет под вырез и полосу жестов"

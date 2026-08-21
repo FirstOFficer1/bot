@@ -1665,7 +1665,12 @@ _LOGIN_TPL = """
         radial-gradient(circle at 82% 88%, color-mix(in srgb, #6366F1 14%, transparent), transparent 55%),
         var(--bg);
       display: flex; align-items: center; justify-content: center;
-      padding: 16px;
+      /* Безопасные зоны: viewport-fit=cover отдаёт странице область под вырезом
+         и полосой жестов, иначе карточка входа уезжает под системные элементы. */
+      padding: max(16px, env(safe-area-inset-top, 0px))
+               max(16px, env(safe-area-inset-right, 0px))
+               max(16px, env(safe-area-inset-bottom, 0px))
+               max(16px, env(safe-area-inset-left, 0px));
       -webkit-font-smoothing: antialiased;
     }
     .login-shell {
