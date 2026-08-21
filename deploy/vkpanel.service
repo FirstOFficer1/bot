@@ -20,7 +20,12 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=/root/vkbot
 # .env читает сам процесс через python-dotenv — см. комментарий в vkbot.service.
-ExecStart=/root/vkbot/venv/bin/gunicorn -b 127.0.0.1:8080 -w 1 -k gthread --threads 4 --timeout 60 --access-logfile - --error-logfile - web_panel:app
+ExecStart=/root/vkbot/venv/bin/gunicorn -b 127.0.0.1:8080 -w 1 -k gthread --threads 4 --timeout 60 --control-socket /run/vkpanel/gunicorn.ctl --access-logfile - --error-logfile - web_panel:app
+# gunicorn кладёт управляющий сокет в $HOME/.gunicorn, а ProtectHome ниже делает
+# /root доступным только на чтение — получался «Control server error: Read-only
+# file system» и терялся gunicornc (статус воркеров, graceful reload). Каталог
+# создаёт и убирает systemd.
+RuntimeDirectory=vkpanel
 Restart=always
 RestartSec=5
 TimeoutStopSec=20
