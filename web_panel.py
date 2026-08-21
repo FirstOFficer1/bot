@@ -122,7 +122,7 @@ if _TRUSTED_PROXIES:
 def _security_headers(resp):
     resp.headers.setdefault("Content-Security-Policy",
         "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.jsdelivr.net; "
+        "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; "
         "font-src 'self' https://fonts.gstatic.com; "
         "img-src 'self' data: https:; "
@@ -826,8 +826,21 @@ _BASE_TPL = """
 <html lang="ru" data-theme="light" data-bs-theme="light">
 <head>
   <meta charset="utf-8">
-  <script src="https://unpkg.com/@vkontakte/vk-bridge/dist/browser.min.js"></script>
-  <script>try{if(window.vkBridge)vkBridge.send("VKWebAppInit").catch(function(){});}catch(e){}</script>
+  <!-- VK Mini App: VKWebAppInit обязан уйти сразу. Пока он не пришёл, VK держит
+       пустой экран и через несколько секунд пишет «Приложение не инициализировано».
+       Поэтому сообщение отправляется инлайном, до единой сетевой загрузки, а сама
+       библиотека лежит у нас и подключена defer — чужой CDN в этой цепочке был
+       блокирующим <script> в <head> и мог сорвать инициализацию целиком. -->
+  <script>
+  (function(){var m={handler:"VKWebAppInit",params:{},type:"vk-connect"};try{
+    if(window.AndroidBridge&&window.AndroidBridge.VKWebAppInit){window.AndroidBridge.VKWebAppInit("{}");}
+    else if(window.webkit&&window.webkit.messageHandlers&&window.webkit.messageHandlers.VKWebAppInit){window.webkit.messageHandlers.VKWebAppInit.postMessage({});}
+    else if(window.ReactNativeWebView){window.ReactNativeWebView.postMessage(JSON.stringify(m));}
+    else if(window.parent!==window){window.parent.postMessage(m,"*");}
+  }catch(e){}})();
+  </script>
+  <script src="/static/vk-bridge.min.js" defer></script>
+  <script>window.addEventListener("load",function(){try{if(window.vkBridge)vkBridge.send("VKWebAppInit").catch(function(){});}catch(e){}});</script>
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#C21E41">
   <meta name="robots" content="noindex, nofollow, noarchive">
@@ -1638,8 +1651,21 @@ _LOGIN_TPL = """
 <html lang="ru" data-theme="light">
 <head>
   <meta charset="utf-8">
-  <script src="https://unpkg.com/@vkontakte/vk-bridge/dist/browser.min.js"></script>
-  <script>try{if(window.vkBridge)vkBridge.send("VKWebAppInit").catch(function(){});}catch(e){}</script>
+  <!-- VK Mini App: VKWebAppInit обязан уйти сразу. Пока он не пришёл, VK держит
+       пустой экран и через несколько секунд пишет «Приложение не инициализировано».
+       Поэтому сообщение отправляется инлайном, до единой сетевой загрузки, а сама
+       библиотека лежит у нас и подключена defer — чужой CDN в этой цепочке был
+       блокирующим <script> в <head> и мог сорвать инициализацию целиком. -->
+  <script>
+  (function(){var m={handler:"VKWebAppInit",params:{},type:"vk-connect"};try{
+    if(window.AndroidBridge&&window.AndroidBridge.VKWebAppInit){window.AndroidBridge.VKWebAppInit("{}");}
+    else if(window.webkit&&window.webkit.messageHandlers&&window.webkit.messageHandlers.VKWebAppInit){window.webkit.messageHandlers.VKWebAppInit.postMessage({});}
+    else if(window.ReactNativeWebView){window.ReactNativeWebView.postMessage(JSON.stringify(m));}
+    else if(window.parent!==window){window.parent.postMessage(m,"*");}
+  }catch(e){}})();
+  </script>
+  <script src="/static/vk-bridge.min.js" defer></script>
+  <script>window.addEventListener("load",function(){try{if(window.vkBridge)vkBridge.send("VKWebAppInit").catch(function(){});}catch(e){}});</script>
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#C21E41">
   <meta name="robots" content="noindex, nofollow, noarchive">

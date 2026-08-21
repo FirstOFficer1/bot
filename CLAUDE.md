@@ -280,11 +280,21 @@ moderation rejects on them. What the code does for each:
   Checked on **every** request, not just the first — browsers block iframe cookies.
 - **1.1.4 / 2.4.1** — links to terms, privacy and support live in the in-app footer
   (`.app-foot`), not only on the login page a VK user never sees.
-- **2.2.1** — VK Bridge is loaded and `VKWebAppInit` is sent from both templates; CSP
-  must keep allowing `unpkg.com`, or the bridge silently never initializes.
+- **2.2.1** — `VKWebAppInit` must reach VK, or the container shows a blank frame and
+  then "Приложение не инициализировано". Both templates send it **inline, before any
+  external resource**, and the bridge itself is vendored at `static/vk-bridge.min.js`
+  (v3.0.2, from `unpkg.com/@vkontakte/vk-bridge`) and loaded `defer` — as a
+  render-blocking `<script>` in `<head>` a slow CDN alone was enough to miss VK's
+  timeout. Keep both properties when touching the head.
 - **1.2.6** — `_rate_limit()` caps requests per IP (`PANEL_RATE_LIMIT_RPM`), skipping
   `/healthz` and `/static/`.
 - **3.2.2** — `viewport-fit=cover` plus `env(safe-area-inset-*)` padding.
+
+**CSP must stay a single header.** Browsers enforce every CSP header they receive,
+so an `add_header Content-Security-Policy` in nginx does not replace the app's — both
+apply, and a frame has to be allowed by each. The server's copy listed only `vk.com`
+and blocked the Mini App once VK started serving from `vk.ru`. Set the policy in
+`_security_headers()` and nowhere else.
 
 `tests/test_vk_rules.py` pins all of the above.
 

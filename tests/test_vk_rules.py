@@ -73,12 +73,56 @@ def test_vk_bridge_inside_the_app(client):
     _has_bridge(client.get("/").get_data(as_text=True))
 
 
-def test_csp_allows_vk_bridge(anon):
-    """CSP не должна блокировать саму библиотеку — иначе инициализации не будет."""
+def test_bridge_is_served_from_our_own_origin(anon):
+    """Библиотека лежит у нас: чужой CDN в <head> — блокирующая загрузка, и когда
+    он тормозит, VK успевает написать «Приложение не инициализировано»."""
+    html = anon.get("/login").get_data(as_text=True)
+
+    assert "/static/vk-bridge.min.js" in html
+    assert "unpkg.com" not in html, "библиотека снова тянется со стороннего CDN"
+
+    resp = anon.get("/static/vk-bridge.min.js")
+    try:
+        assert resp.status_code == 200, "файл библиотеки не отдаётся"
+    finally:
+        resp.close()
+
+
+@pytest.mark.parametrize("page", ["app", "login"])
+def test_init_goes_out_before_any_external_load(client, anon, page):
+    """VKWebAppInit не должен ждать ни одной сетевой загрузки."""
+    html = (client.get("/") if page == "app" else anon.get("/login")).get_data(as_text=True)
+    head = html.split("</head>")[0]
+
+    init_at = head.index("VKWebAppInit")
+    external_at = head.index("https://")
+
+    assert init_at < external_at, "инициализация стоит после внешних ресурсов"
+
+
+def test_csp_allows_the_bridge_and_vk_frames(anon):
+    """CSP не должна блокировать ни библиотеку, ни встраивание внутрь VK."""
     csp = anon.get("/login").headers.get("Content-Security-Policy", "")
 
-    assert "unpkg.com" in csp
-    assert "frame-ancestors" in csp and "vk.com" in csp
+    assert "script-src 'self'" in csp, "своя библиотека должна быть разрешена"
+    assert "frame-ancestors" in csp
+
+
+@pytest.mark.parametrize("domain", ["https://vk.com", "https://vk.ru"])
+def test_frame_ancestors_cover_live_vk_domains(anon, domain):
+    """VK отдаёт веб и с vk.com, и с vk.ru — забыть домен значит получить
+    пустой фрейм и «Приложение не инициализировано»."""
+    csp = anon.get("/login").headers.get("Content-Security-Policy", "")
+    ancestors = csp.split("frame-ancestors")[1].split(";")[0]
+
+    assert domain in ancestors, f"{domain} не разрешён как родительский фрейм"
+
+
+def test_csp_is_a_single_header(anon):
+    """Два заголовка CSP браузер применяет одновременно, а не заменяет один
+    другим: фрейм должен быть разрешён каждым. Так vk.ru и оказался заблокирован
+    списком из nginx, который отстал от приложения."""
+    assert len(anon.get("/login").headers.getlist("Content-Security-Policy")) == 1
 
 
 # ── 3.2.2: безопасные зоны экрана ────────────────────────────────────────────
