@@ -217,3 +217,14 @@ def test_privacy_describes_self_service_deletion(anon):
 
     assert "Удалить мои данные" in html
     assert "напишите боту" not in html.lower(), "старое обещание про переписку устарело"
+
+
+@pytest.mark.parametrize("path", ["/privacy", "/terms"])
+def test_legal_sections_are_numbered_in_order(anon, path):
+    """Нумерация разделов сбилась при правке — модератор такое видит сразу."""
+    import re
+
+    html = anon.get(path).get_data(as_text=True)
+    numbers = [int(n) for n in re.findall(r"<h2>(\d+)\.", html)]
+
+    assert numbers == list(range(1, len(numbers) + 1)), f"порядок разделов: {numbers}"
