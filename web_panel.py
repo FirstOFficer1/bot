@@ -575,7 +575,12 @@ def _check_vk_sign():
 
     if _launch_is_new(request.args.get("sign", "")):
         seen_users.touch(uid)
-        audit.log(uid, "auth.login", "via VK Mini App", "seamless")
+        # Платформу пишем не для красоты: когда пользователь говорит «с телефона
+        # не пускает», журнал — единственный способ узнать, дошёл ли запуск до
+        # нас вообще. Пустого mobile_* в журнале достаточно, чтобы не искать
+        # причину у себя: значит, VK не открыл приложение.
+        platform = request.args.get("vk_platform", "?")[:32]
+        audit.log(uid, "auth.login", "via VK Mini App", f"seamless, {platform}")
 
 
 @app.before_request

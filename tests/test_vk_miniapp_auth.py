@@ -100,6 +100,15 @@ def test_launch_is_audited_once_per_session(client):
     assert len(logins) == 1, "один запуск — одна запись в журнале, а не по одной на запрос"
 
 
+def test_launch_records_the_platform(client):
+    """Без платформы в журнале нельзя отличить «телефон до нас не дошёл» от
+    «дошёл, но что-то сломалось у нас»."""
+    client.get(f"/me?{launch_params(extra={'vk_platform': 'mobile_iphone'})}")
+
+    logins = [e for e in audit.list_recent(limit=20) if e["action"] == "auth.login"]
+    assert logins and "mobile_iphone" in (logins[0]["details"] or "")
+
+
 def test_works_without_cookies(client):
     """Браузеры режут куки в iframe: подпись должна работать и без сессии."""
     params = launch_params()
