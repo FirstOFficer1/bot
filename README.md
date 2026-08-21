@@ -119,10 +119,12 @@ certbot --nginx -d elschedule.ru -d www.elschedule.ru
 Обновление уже развёрнутого:
 
 ```bash
-cd /root/vkbot && git pull && systemctl restart vkpanel vkbot
-curl -s -o /dev/null -w '%{http_code}
-' https://elschedule.ru/healthz   # ждём 200
+cd /root/vkbot && bash deploy/deploy.sh
 ```
+
+Скрипт подтягивает `origin/main`, перезапускает оба сервиса и ждёт, пока
+`/healthz` ответит 200 — то есть пока БД откроется, а все воркеры бота отметятся.
+Не дождался — возвращает 1 и подсказывает, что смотреть в журнале.
 
 Бэкапы ставятся оттуда же: `vkbot-backup.service` и таймер к нему — ежедневно
 в 04:30, хранение 14 дней, с проверкой целостности копий.
