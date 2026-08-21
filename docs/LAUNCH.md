@@ -52,6 +52,13 @@
 - [ ] Порт панели (8080) закрыт извне (`ufw status` / firewall провайдера).
 - [ ] Зона лимита на месте: `cp deploy/panel-ratelimit.conf /etc/nginx/conf.d/`.
       Без неё nginx не поднимется вовсе — `unknown limit_req zone "panel_rl"`.
+- [ ] В nginx нет своего `add_header Content-Security-Policy`. Он не заменяет
+      заголовок панели, а добавляется вторым, и фрейм обязан пройти обе политики
+      сразу: устаревший список в nginx уже блокировал Mini App на vk.ru при
+      живом vk.com. Проверка: `curl -I https://<домен>/login` — заголовок один.
+- [ ] `python tools/check_miniapp.py` зелёный: приложение встраивается и
+      отвечает `VKWebAppInit` и на vk.ru, и на vk.com. Без этого VK показывает
+      «Приложение не инициализировано» вместо панели.
 
 ## 3. Запуск сервисов
 
