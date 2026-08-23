@@ -273,6 +273,31 @@ are in-memory module state. A second worker breaks schedule uploads ("unknown or
 expired token") and scrambles broadcast progress. Move that state into the DB before
 scaling out.
 
+### Consent gate (152-ФЗ)
+
+`_require_consent()` is a `before_request` that redirects any logged-in user to
+`/consent` until they have accepted the current consent text. The version lives in
+`vkbot/models/consents.py::VERSION` — bump it when the wording changes and everyone
+re-accepts, because otherwise people count as having agreed to a document they never
+saw. Only `_CONSENT_FREE_ENDPOINTS` pass through: login/logout, the legal pages, the
+consent screen itself, `/healthz`, static, and `me_delete_all` — refusing and wiping
+yourself must not require signing anything.
+
+Two consequences worth knowing before you debug something confusing:
+
+- **A new test that logs in and expects 200 will get a 302 to `/consent`.** Call
+  `consents.accept(uid, source="test")` in the fixture, the way every panel test file
+  already does. The gate itself is covered by `tests/test_consent.py`.
+- **Seamless VK launch does not imply consent.** VK hands us `vk_user_id`, not
+  agreement to our processing, so the Mini App shows the screen once too. This does
+  not conflict with VK rule 1.1.2 (that one is about redundant *authentication*);
+  1.1.4 requires exactly such an acceptance.
+
+`user_data.export_all()` (`/me/export`) and `user_data.purge()` walk the same
+`_USER_TABLES`, so what gets exported and what gets deleted cannot drift apart — a
+test asserts the two sets are equal. Add a table with a `user_id`/`vk_id` column and
+`tests/test_delete_my_data.py` fails until it is listed there.
+
 ### VK Mini App
 
 The panel runs inside VK as a Mini App, and the platform rules

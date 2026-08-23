@@ -20,7 +20,7 @@ from urllib.parse import urlencode
 import pytest
 
 import web_panel
-from vkbot.models import audit, panel_users
+from vkbot.models import audit, consents, panel_users
 
 SECRET = "test-app-secret"
 APP_ID = 51234567
@@ -41,6 +41,11 @@ def _vk_app(monkeypatch):
 def client():
     web_panel.app.config.update(TESTING=True, WTF_CSRF_ENABLED=False)
     with web_panel.app.test_client() as c:
+        # Согласие на обработку данных — отдельный шлюз перед всем остальным
+        # (152-ФЗ, ст. 9). Здесь проверяется вход, поэтому шлюз открыт заранее;
+        # его собственное поведение — в tests/test_consent.py.
+        consents.accept(USER, source="test")
+        consents.accept(ADMIN, source="test")
         yield c
 
 
@@ -116,6 +121,18 @@ def test_works_without_cookies(client):
     client.delete_cookie("session")
 
     assert client.get(f"/me?{params}").status_code == 200
+
+
+def test_seamless_user_still_gives_consent(client):
+    """Бесшовный вход снимает вопрос «кто это», но не согласие на обработку:
+    VK передаёт нам vk_user_id, а не согласие с нашими условиями."""
+    fresh = 555777
+    consents.withdraw(fresh)
+
+    resp = client.get(f"/me?{launch_params(uid=fresh)}")
+
+    assert resp.status_code in (302, 303)
+    assert "/consent" in resp.headers.get("Location", "")
 
 
 # ── Не пускает, когда верить нельзя ──────────────────────────────────────────

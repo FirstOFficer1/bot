@@ -13,6 +13,7 @@ import pytest
 
 import web_panel
 from vkbot.models import panel_codes
+from vkbot.models import consents
 
 
 @pytest.fixture
@@ -21,6 +22,7 @@ def client():
     with web_panel.app.test_client() as c:
         code, _ttl = panel_codes.issue(1001)
         c.post("/login/code", data={"code": code})
+        consents.accept(1001, source="test")
         yield c
 
 

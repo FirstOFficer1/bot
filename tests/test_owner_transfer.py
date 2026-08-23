@@ -14,6 +14,7 @@ import pytest
 from vkbot.models import audit, panel_codes, panel_users
 
 import web_panel
+from vkbot.models import consents
 
 OWNER = 1001          # он же ADMIN_ID из conftest — владелец из env
 SUCCESSOR = 2002
@@ -29,7 +30,11 @@ def client():
 
 def _login(client, vk_id: int):
     code, _ttl = panel_codes.issue(vk_id)
-    return client.post("/login/code", data={"code": code, "remember": "1"})
+    resp = client.post("/login/code", data={"code": code, "remember": "1"})
+    # Согласие — обязательный шлюз (152-ФЗ, ст. 9): без него панель уводит
+    # на /consent. Сам экран проверяется в tests/test_consent.py.
+    consents.accept(vk_id, source="test")
+    return resp
 
 
 def _fresh_code(vk_id: int) -> str:

@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 
 import web_panel
+from vkbot.models import consents
 from vkbot import db
 from vkbot.models import audit, deadlines, notes, panel_codes, reminders
 from vkbot.models import subscriptions, user_data
@@ -28,7 +29,11 @@ def client():
 
 def _login(client, uid: int):
     code, _ttl = panel_codes.issue(uid)
-    return client.post("/login/code", data={"code": code})
+    resp = client.post("/login/code", data={"code": code})
+    # Согласие — обязательный шлюз (152-ФЗ, ст. 9): без него панель уводит
+    # на /consent. Сам экран проверяется в tests/test_consent.py.
+    consents.accept(uid, source="test")
+    return resp
 
 
 def _fill_data(uid: int) -> None:

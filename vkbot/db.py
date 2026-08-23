@@ -104,6 +104,18 @@ def init() -> None:
                 last_used_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_rm_tokens_user ON panel_remember_tokens(vk_id);
+            -- Согласие на обработку персональных данных (152-ФЗ, ст. 9).
+            -- Хранится версия текста: меняем документ — поднимаем версию, и
+            -- согласие спрашивается заново, иначе человек считался бы
+            -- согласившимся с тем, чего не читал. IP и время — доказательство
+            -- того, что согласие было дано, его требуют при проверке.
+            CREATE TABLE IF NOT EXISTS user_consents (
+                vk_id INTEGER PRIMARY KEY,
+                version TEXT NOT NULL,
+                accepted_at TEXT NOT NULL,
+                ip TEXT,
+                source TEXT
+            );
             CREATE TABLE IF NOT EXISTS audit_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 actor_vk_id INTEGER NOT NULL DEFAULT 0,

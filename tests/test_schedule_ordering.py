@@ -15,15 +15,17 @@ from vkbot.schedule.repo import repo
 
 import web_panel
 
+
 @pytest.fixture
 def client_owner():
     """Залогиненный владелец: страницы расписания требуют входа."""
-    from vkbot.models import panel_codes
+    from vkbot.models import consents, panel_codes
 
     web_panel.app.config.update(TESTING=True, WTF_CSRF_ENABLED=False)
     with web_panel.app.test_client() as c:
         code, _ttl = panel_codes.issue(1001)
         c.post("/login/code", data={"code": code})
+        consents.accept(1001, source="test")
         yield c
 
 

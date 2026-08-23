@@ -31,6 +31,7 @@ _USER_TABLES: tuple[tuple[str, str], ...] = (
     ("panel_remember_tokens", "vk_id"),
     ("seen_users", "vk_id"),
     ("panel_users", "vk_id"),
+    ("user_consents", "vk_id"),
 )
 
 # Человеческие названия для отчёта пользователю — что именно удалили.
@@ -46,6 +47,7 @@ LABELS = {
     "panel_remember_tokens": "сессии «запомнить меня»",
     "seen_users": "запись о посещении",
     "panel_users": "роль в панели",
+    "user_consents": "согласие на обработку данных",
 }
 
 
@@ -71,3 +73,25 @@ def purge(uid: int) -> dict[str, int]:
             if cur.rowcount:
                 removed[table] = cur.rowcount
     return removed
+
+
+def export_all(uid: int) -> dict:
+    """Все данные пользователя в виде {таблица: [{колонка: значение}, ...]}.
+
+    Право на доступ к своим данным (152-ФЗ, ст. 14) — вторая половина права на
+    удаление, и список таблиц у них общий: то, что удаляется, должно и
+    выгружаться. Расходиться они не могут, потому что оба идут по
+    `_USER_TABLES`.
+
+    Отдаём как есть, вместе с названиями колонок: выгрузка должна быть
+    проверяемой, а не пересказом.
+    """
+    out: dict[str, list[dict]] = {}
+    with connect() as conn:
+        for table, column in _USER_TABLES:
+            cur = conn.execute(f"SELECT * FROM {table} WHERE {column}=?", (uid,))
+            names = [d[0] for d in cur.description]
+            rows = [dict(zip(names, r)) for r in cur.fetchall()]
+            if rows:
+                out[table] = rows
+    return out

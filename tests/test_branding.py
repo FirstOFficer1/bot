@@ -13,6 +13,7 @@ import re
 import pytest
 
 import web_panel
+from vkbot.models import consents
 
 PROJECT = pathlib.Path(__file__).resolve().parent.parent
 STATIC = PROJECT / "static"
@@ -60,6 +61,7 @@ def test_login_page_shows_logo_and_favicon(client):
 def test_sidebar_shows_logo_mark(client):
     code, _ttl = web_panel.panel_codes.issue(1001)
     client.post("/login/code", data={"code": code})
+    consents.accept(1001, source="test")
 
     html = client.get("/").get_data(as_text=True)
 

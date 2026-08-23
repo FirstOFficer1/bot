@@ -24,6 +24,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import json
 import os
 import time
 import secrets
@@ -34,6 +35,7 @@ import threading
 from collections import defaultdict, deque
 from functools import wraps
 from pathlib import Path
+from urllib.parse import quote
 
 from dotenv import load_dotenv
 from flask import (
@@ -53,8 +55,8 @@ from flask import (
 from vkbot import config as _bot_config
 from vkbot import notifier, vk_names
 from vkbot.models import (
-    audit, heartbeats, panel_codes, panel_remember, panel_users, seen_users,
-    subscriptions, user_data,
+    audit, consents, heartbeats, panel_codes, panel_remember, panel_users,
+    seen_users, subscriptions, user_data,
 )
 from vkbot.schedule import loader as schedule_loader
 
@@ -611,6 +613,40 @@ def _load_current_user():
         g.user = _build_user(launch_uid)
 
 
+# Что открыто до согласия. Всё остальное закрыто намеренно: пока согласия нет,
+# мы не вправе ни показывать накопленное, ни собирать новое. Удаление своих
+# данных оставлено доступным — отказаться и стереть себя человек должен мочь,
+# ничего не подписывая.
+_CONSENT_FREE_ENDPOINTS = frozenset({
+    "consent_page", "consent_accept", "consent_decline",
+    "login", "login_code", "logout", "logout_all",
+    "privacy", "terms", "healthz", "robots_txt", "static",
+    "me_delete_all",
+})
+
+
+@app.before_request
+def _require_consent():
+    """Пускает дальше только тех, кто дал согласие на обработку (152-ФЗ, ст. 9).
+
+    Проверяется версия: меняется текст согласия — поднимается
+    `consents.VERSION`, и экран показывается снова. Иначе человек числился бы
+    согласившимся с документом, которого не видел.
+
+    Правилам VK это не противоречит: п. 1.1.2 запрещает лишнюю авторизацию, а
+    здесь не вход, а принятие документа, которого п. 1.1.4 как раз и требует.
+    """
+    user = getattr(g, "user", None)
+    if not user or request.endpoint in _CONSENT_FREE_ENDPOINTS:
+        return None
+    if consents.accepted(user["vk_id"]):
+        return None
+    target = url_for("consent_page")
+    if request.method == "GET" and request.endpoint:
+        target += "?next=" + quote(request.path, safe="/")
+    return redirect(target)
+
+
 @app.after_request
 def _flush_remember_cookie(resp):
     """Чистит протухшую куку, если before_request пометил её мёртвой."""
@@ -826,11 +862,12 @@ def _get_user_data(uid: int) -> dict:
 
 # ── Шаблоны ───────────────────────────────────────────────────────────────────
 
-_BASE_TPL = """
-<!doctype html>
-<html lang="ru" data-theme="light" data-bs-theme="light">
-<head>
-  <meta charset="utf-8">
+# Кусок <head> для каждой страницы, которую может увидеть пользователь внутри
+# VK. Раньше он был скопирован в шаблоны по месту, и любая новая страница —
+# согласие, юридические документы — оказывалась без инициализации: если такая
+# страница открывается первой, VK показывает «Приложение не инициализировано»
+# вместо неё. Один текст на все шаблоны.
+_VK_INIT_HEAD = """
   <!-- VK Mini App: VKWebAppInit обязан уйти сразу. Пока он не пришёл, VK держит
        пустой экран и через несколько секунд пишет «Приложение не инициализировано».
        Поэтому сообщение отправляется инлайном, до единой сетевой загрузки, а сама
@@ -846,7 +883,14 @@ _BASE_TPL = """
   </script>
   <script src="/static/vk-bridge.min.js" defer></script>
   <script>window.addEventListener("load",function(){try{if(window.vkBridge)vkBridge.send("VKWebAppInit").catch(function(){});}catch(e){}});</script>
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+"""
+
+_BASE_TPL = """
+<!doctype html>
+<html lang="ru" data-theme="light" data-bs-theme="light">
+<head>
+  <meta charset="utf-8">
+""" + _VK_INIT_HEAD + """  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#C21E41">
   <meta name="robots" content="noindex, nofollow, noarchive">
   <meta name="googlebot" content="noindex, nofollow">
@@ -2898,6 +2942,27 @@ _ME_CONTENT = """
     </div>
   </div>
 
+  {# Право на доступ к своим данным (152-ФЗ, ст. 14) — вторая половина права
+     на удаление. Стоит перед удалением намеренно: копию логично забрать до
+     того, как нажмёшь красную кнопку. #}
+  <div class="col-12">
+    <div class="card">
+      <div class="card-header fw-semibold">⬇ Скачать мои данные</div>
+      <div class="card-body">
+        <p style="font-size:13px;color:var(--text-3);">
+          Файл JSON со всем, что о тебе хранится: заметки, напоминания, дедлайны,
+          подписки, выбранная группа, сессии входа и запись о согласии — как есть,
+          вместе с названиями полей.
+          {% if consent %}
+            Согласие принято {{ consent.accepted_at.replace("T", " ") }},
+            редакция {{ consent.version }}.
+          {% endif %}
+        </p>
+        <a class="btn btn-sm btn-outline" href="{{ url_for('me_export') }}">Скачать JSON</a>
+      </div>
+    </div>
+  </div>
+
   {# Удаление всех данных — обещание из политики конфиденциальности, которое
      до сих пор выполнялось вручную через переписку с администратором. #}
   <div class="col-12">
@@ -2982,7 +3047,7 @@ _LEGAL_TPL = """<!doctype html>
 <html lang="ru">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+""" + _VK_INIT_HEAD + """  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#C21E41">
   <title>{{ title }} — Электронное расписание</title>
   <link rel="icon" href="/static/logo-mark.svg" type="image/svg+xml">
@@ -3051,14 +3116,23 @@ _PRIVACY_BODY = """
   <li>Чтобы сохранять ваши заметки и настройки между сессиями.</li>
   <li>Чтобы отправлять уведомления об изменениях расписания (если вы подписаны).</li>
   <li>Чтобы защищать Сервис от злоупотреблений (ограничение частоты входов).</li>
+  <li>Чтобы подтвердить, что согласие на обработку было дано: вместе с ним
+      сохраняются дата, время и IP-адрес.</li>
 </ul>
 
-<h2>4. Передача третьим лицам</h2>
+<h2>4. На каком основании</h2>
+<p>Основание — ваше согласие (152-ФЗ, ст. 9). Его дают один раз, отдельным
+действием, при первом входе; текст согласия открывается там же. При изменении
+текста согласие спрашивается заново. Отозвать его можно в любой момент —
+см. раздел 6; отзыв означает удаление всех данных, потому что без согласия
+обрабатывать их мы не вправе.</p>
+
+<h2>5. Передача третьим лицам</h2>
 <p>Мы <b>не продаём и не передаём</b> ваши персональные данные третьим лицам.
 Имя запрашивается у VK API только для отображения. Данные хранятся на нашем
 сервере и не используются в рекламных целях.</p>
 
-<h2>5. Хранение и удаление</h2>
+<h2>6. Хранение и удаление</h2>
 <p>Заметки, напоминания, дедлайны и подписки хранятся, пока вы пользуетесь
 Сервисом, и удаляются по вашей команде. Служебные записи живут ограниченный
 срок: одноразовый код входа — {{ code_ttl_min }} минут (запись о нём удаляется
@@ -3071,13 +3145,16 @@ _PRIVACY_BODY = """
 группу и сессии входа без возможности восстановления; в журнале безопасности
 остаётся только запись о самом факте удаления. Отдельные записи удаляются там же
 по одной.</p>
+<p><b>Забрать копию</b> своих данных можно там же: «Мой профиль» → «Скачать мои
+данные». В файл попадает всё, что о вас хранится, вместе с названиями полей и
+записью о согласии — состав тот же, что и у кнопки удаления.</p>
 
-<h2>6. Безопасность</h2>
+<h2>7. Безопасность</h2>
 <p>Соединение защищено HTTPS. Вход выполняется по одноразовому коду из VK-бота.
 Применяются защита от перебора (rate-limit), CSRF-токены и политика Content
 Security Policy.</p>
 
-<h2>7. Контакты</h2>
+<h2>8. Контакты</h2>
 <p>По вопросам обработки данных пишите администратору через VK-бота Сервиса.</p>
 """
 
@@ -3135,8 +3212,154 @@ def privacy():
     )
     return render_template_string(
         _LEGAL_TPL, title="Политика конфиденциальности",
-        updated="21 августа 2026", body=body,
+        updated="22 августа 2026", body=body,
     )
+
+
+_CONSENT_BODY = """
+<p>Настоящим я даю согласие на обработку моих персональных данных сервисом
+«Электронное расписание» на условиях, изложенных ниже.</p>
+
+<h2>1. Оператор</h2>
+<p>{{ developer_name }}. Связь — через
+<a href="{{ support_url }}">сообщество бота</a> ВКонтакте.</p>
+
+<h2>2. Какие данные обрабатываются</h2>
+<ul>
+  <li>идентификатор ВКонтакте (VK ID) и отображаемое имя;</li>
+  <li>выбранные курс и направление обучения;</li>
+  <li>созданные вами заметки, напоминания, дедлайны и подписки на расписание;</li>
+  <li>IP-адрес и время входа — для защиты от подбора кода и как подтверждение
+      того, что настоящее согласие было дано.</li>
+</ul>
+
+<h2>3. Зачем</h2>
+<p>Чтобы показывать расписание вашей группы, присылать напоминания о парах и
+хранить то, что вы сами записали. Для рекламы и профилирования данные не
+используются и третьим лицам не передаются.</p>
+
+<h2>4. Какие действия совершаются</h2>
+<p>Сбор, запись, систематизация, хранение, уточнение, использование, удаление —
+автоматизированно, на сервере Оператора.</p>
+
+<h2>5. Срок</h2>
+<p>Согласие действует, пока вы пользуетесь Сервисом. Конкретные сроки хранения
+по каждому виду данных указаны в
+<a href="{{ url_for('privacy') }}">Политике конфиденциальности</a>.</p>
+
+<h2>6. Как отозвать</h2>
+<p>В любой момент: «Мой профиль» → «Удалить мои данные». Отзыв согласия
+означает удаление всех данных, и Сервис перестаёт работать для вас — без
+согласия обрабатывать их мы не вправе. Отдельная кнопка «Скачать мои данные»
+рядом позволяет забрать копию перед удалением.</p>
+"""
+
+_CONSENT_TPL = """<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+""" + _VK_INIT_HEAD + """  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#C21E41">
+  <meta name="robots" content="noindex, nofollow, noarchive">
+  <title>Согласие на обработку данных — Электронное расписание</title>
+  <link rel="icon" href="/static/logo-mark.svg" type="image/svg+xml">
+  <style>
+    :root { --accent:#C21E41; --bg:#0f1110; --surface:#161a18; --text:#e8eae6; --muted:#9aa39c; --border:#262b27; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--text);
+      font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+      line-height:1.65;
+      padding:calc(24px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right))
+              calc(24px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left)); }
+    .wrap { max-width:760px; margin:0 auto; }
+    .card { background:var(--surface); border:1px solid var(--border);
+      border-radius:16px; padding:28px 26px; }
+    h1 { font-size:24px; margin:0 0 4px; }
+    h2 { font-size:17px; margin:26px 0 8px; color:var(--accent); }
+    .upd { color:var(--muted); font-size:13px; margin-bottom:18px; }
+    p, li { font-size:15px; color:var(--text); }
+    ul { padding-left:20px; }
+    a { color:var(--accent); }
+    .agree { margin-top:26px; padding-top:20px; border-top:1px solid var(--border); }
+    .agree label { display:flex; gap:10px; align-items:flex-start; font-size:15px; cursor:pointer; }
+    .agree input { margin-top:4px; width:18px; height:18px; flex:none; accent-color:var(--accent); }
+    .btn { display:block; width:100%; margin-top:18px; padding:13px 18px; border:0;
+      border-radius:12px; background:var(--accent); color:#fff; font-size:16px;
+      font-weight:600; cursor:pointer; }
+    .btn:disabled { opacity:.45; cursor:not-allowed; }
+    .secondary { margin-top:14px; text-align:center; }
+    .secondary button { background:none; border:0; color:var(--muted);
+      font-size:14px; text-decoration:underline; cursor:pointer; padding:6px; }
+    .err { margin-top:14px; color:#ff8a9b; font-size:14px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>Согласие на обработку персональных данных</h1>
+      <div class="upd">Редакция от {{ version }}</div>
+      {{ body | safe }}
+
+      <form class="agree" method="post" action="{{ url_for('consent_accept') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="next" value="{{ next_url }}">
+        <label>
+          <input type="checkbox" name="agree" value="yes" id="agree"
+                 onchange="document.getElementById('go').disabled=!this.checked">
+          <span>Я прочитал(а) и принимаю условия выше, а также
+            <a href="{{ url_for('privacy') }}" target="_blank">Политику конфиденциальности</a> и
+            <a href="{{ url_for('terms') }}" target="_blank">Условия использования</a>.</span>
+        </label>
+        <button class="btn" id="go" type="submit" disabled>Продолжить</button>
+      </form>
+      {% if error %}<div class="err">{{ error }}</div>{% endif %}
+
+      <div class="secondary">
+        <form method="post" action="{{ url_for('me_delete_all') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="confirm" value="yes">
+          <button type="submit">Не согласен(на) — удалить мои данные</button>
+        </form>
+      </div>
+    </div>
+  </div>
+</body>
+</html>"""
+
+
+def _render_consent(next_url: str, error: str = "") -> str:
+    body = render_template_string(
+        _CONSENT_BODY, developer_name=DEVELOPER_NAME, support_url=SUPPORT_URL,
+    )
+    return render_template_string(
+        _CONSENT_TPL, body=body, version=consents.VERSION,
+        next_url=next_url, error=error,
+    )
+
+
+@app.route("/consent", methods=["GET"])
+@login_required
+def consent_page():
+    """Экран согласия. Показывается один раз на редакцию текста."""
+    return _render_consent(_safe_next(request.args.get("next"), url_for("dashboard")))
+
+
+@app.route("/consent", methods=["POST"])
+@login_required
+def consent_accept():
+    uid = _current_vk_id()
+    if not uid:
+        return redirect(url_for("login"))
+    next_url = _safe_next(request.form.get("next"), url_for("dashboard"))
+    if (request.form.get("agree") or "") != "yes":
+        # Галочка снята — согласия нет. Молча пропустить нельзя: именно
+        # однозначность действия и делает согласие согласием.
+        return _render_consent(next_url, "Без галочки согласие не считается данным."), 400
+
+    consents.accept(uid, ip=_client_ip(), source="mini_app" if getattr(
+        g, "vk_sign_ok", False) else "panel")
+    audit.log(uid, "consent.accept", f"id={uid}", f"версия {consents.VERSION}")
+    return redirect(next_url)
 
 
 @app.route("/terms", methods=["GET"])
@@ -4001,9 +4224,47 @@ def me_page():
         pref=data.get("pref"),
         data_counts=user_data.count_all(vk_id) if vk_id else {},
         data_labels=user_data.LABELS,
+        consent=consents.get(vk_id) if vk_id else None,
         audit_keep_days=_bot_config.AUDIT_KEEP_DAYS,
         is_env_owner=vk_id in OWNER_VK_IDS,
     )
+
+
+@app.route("/me/export", methods=["GET"])
+@login_required
+def me_export():
+    """Отдаёт все данные пользователя одним файлом (152-ФЗ, ст. 14).
+
+    Состав берётся из того же `_USER_TABLES`, по которому идёт удаление:
+    разойтись «что удаляем» и «что показываем» не могут по построению.
+    Выгрузка сырая, с именами колонок — её должно быть можно проверить, а не
+    принять на слово.
+    """
+    uid = _current_vk_id()
+    if not uid:
+        return redirect(url_for("login"))
+
+    try:
+        payload = {
+            "сервис": "Электронное расписание",
+            "оператор": DEVELOPER_NAME,
+            "vk_id": uid,
+            "выгружено": _bot_config.now_msk().strftime("%Y-%m-%d %H:%M:%S"),
+            "согласие": consents.get(uid),
+            "данные": user_data.export_all(uid),
+        }
+    except Exception:
+        logging.exception("me: не удалось собрать выгрузку данных")
+        return redirect(_with_flash(
+            url_for("me_page"), "Не удалось собрать выгрузку, попробуй ещё раз", "danger"))
+
+    audit.log(uid, "me.export", f"id={uid}",
+              ", ".join(f"{k}={len(v)}" for k, v in payload["данные"].items()) or "пусто")
+
+    resp = make_response(json.dumps(payload, ensure_ascii=False, indent=2))
+    resp.headers["Content-Type"] = "application/json; charset=utf-8"
+    resp.headers["Content-Disposition"] = f'attachment; filename="elschedule-{uid}.json"'
+    return resp
 
 
 @app.route("/me/delete-all", methods=["POST"])

@@ -13,6 +13,7 @@ from __future__ import annotations
 import pytest
 
 import web_panel
+from vkbot.models import consents
 from vkbot.models import panel_codes, subscriptions
 
 UID = 1001
@@ -30,6 +31,7 @@ def client():
     with web_panel.app.test_client() as c:
         code, _ttl = panel_codes.issue(UID)
         c.post("/login/code", data={"code": code})
+        consents.accept(UID, source="test")
         yield c
 
 

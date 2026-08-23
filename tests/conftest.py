@@ -48,6 +48,7 @@ def _clean_tables():
             "notes", "reminders", "deadlines", "subscriptions", "user_states",
             "user_prefs", "sent_class_notifications", "panel_login_codes",
             "panel_users", "panel_remember_tokens", "seen_users", "audit_log",
+            "user_consents",
             "worker_heartbeats",
         ):
             conn.execute(f"DELETE FROM {table}")

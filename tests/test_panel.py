@@ -11,6 +11,7 @@ from vkbot.models import audit, panel_codes, panel_users
 
 import tools.make_demo_schedule as demo
 import web_panel
+from vkbot.models import consents
 
 
 @pytest.fixture
@@ -23,7 +24,11 @@ def client():
 def _login(client, vk_id: int):
     """Логин по настоящему одноразовому коду, как это делает бот."""
     code, _ttl = panel_codes.issue(vk_id)
-    return client.post("/login/code", data={"code": code, "remember": "1"})
+    resp = client.post("/login/code", data={"code": code, "remember": "1"})
+    # Согласие — обязательный шлюз (152-ФЗ, ст. 9): без него панель уводит
+    # на /consent. Сам экран проверяется в tests/test_consent.py.
+    consents.accept(vk_id, source="test")
+    return resp
 
 
 # ── Доступ без логина ────────────────────────────────────────────────────────
