@@ -12,6 +12,7 @@ from vkbottle.bot import Message
 
 from . import (
     common,
+    consent,
     deadlines,
     feedback,
     notes,
@@ -23,8 +24,12 @@ from . import (
 from ..models import seen_users
 from ..state import store
 
-# Порядок имеет значение: common перехватывает "Меню" / приветствие первым.
+# Порядок имеет значение. Первым идёт согласие: пока его нет, обрабатывать
+# данные не на чем, поэтому оно перехватывает вообще всё, включая приветствие.
+# Хендлер, поставленный выше него, окажется доступен без согласия.
+# Дальше common перехватывает "Меню" / приветствие.
 _PIPELINE = (
+    consent.try_handle,
     common.try_intro,
     common.try_category,
     panel_login.try_handle,

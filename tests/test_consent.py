@@ -6,8 +6,11 @@
 галочка не поставлена, панель не показывает ничего, кроме самого согласия,
 документов и кнопки «удалить мои данные».
 
-Вторая половина — право на доступ к своим данным (ст. 14): выгрузка идёт по
-тому же списку таблиц, что и удаление, поэтому разойтись они не могут.
+Шлюзов два, потому что поверхностей две: панель и бот. Данные создаются в
+основном в чате, так что экран на сайте закрывал бы половину дыры.
+
+Вторая половина требования — право на доступ к своим данным (ст. 14): выгрузка
+идёт по тому же списку таблиц, что и удаление, поэтому разойтись они не могут.
 """
 
 from __future__ import annotations
@@ -124,6 +127,15 @@ def test_next_cannot_leave_the_site(client):
     resp = client.post("/consent", data={"agree": "yes", "next": "https://evil.example"})
 
     assert "evil.example" not in resp.headers.get("Location", "")
+
+
+def test_consent_text_is_readable_without_login(client):
+    """Бот даёт ссылку на этот текст до того, как человек что-либо о себе
+    сообщил. Требовать согласия с документом, который нельзя прочитать, — абсурд."""
+    html = client.get("/consent").get_data(as_text=True)
+
+    assert "Согласие на обработку персональных данных" in html
+    assert 'name="agree"' not in html, "анониму принимать нечего — формы быть не должно"
 
 
 @pytest.mark.parametrize("path", ["/privacy", "/terms"])
@@ -251,3 +263,112 @@ def test_profile_offers_the_download(client):
 
     assert "Скачать мои данные" in html
     assert "/me/export" in html
+
+
+# ── Бот ──────────────────────────────────────────────────────────────────────
+#
+# Данные создаются в основном в чате, а не на сайте: заметки, напоминания и
+# подписки заводят через бота. Экран в панели закрывал бы половину дыры.
+
+class FakeMessage:
+    """Минимальная замена vkbottle Message: копит ответы."""
+
+    def __init__(self, text: str = "") -> None:
+        self.text = text
+        self.answers: list[str] = []
+
+    async def answer(self, text: str, keyboard=None) -> None:
+        self.answers.append(text)
+
+
+async def _say(text: str, uid: int = USER) -> FakeMessage:
+    """Прогоняет сообщение через весь пайплайн, как это делает диспетчер."""
+    from vkbot.handlers import _PIPELINE
+    from vkbot.state import store
+
+    msg = FakeMessage(text)
+    state = store.get(uid)
+    for handler in _PIPELINE:
+        if await handler(None, msg, state, text, uid):
+            break
+    return msg
+
+
+def test_consent_handler_runs_first():
+    """Хендлер выше согласия окажется доступен без согласия — это и будет
+    ошибкой, поэтому порядок закреплён тестом, а не комментарием."""
+    from vkbot.handlers import _PIPELINE
+    from vkbot.handlers import consent as consent_handler
+
+    assert _PIPELINE[0] is consent_handler.try_handle
+
+
+@pytest.mark.asyncio
+async def test_bot_asks_before_anything_else():
+    msg = await _say("Привет")
+
+    assert not consents.accepted(USER)
+    assert "Принимаю" in msg.answers[0]
+    assert "заметки" in msg.answers[0].lower(), "человек должен видеть состав данных"
+
+
+@pytest.mark.asyncio
+async def test_bot_accepts_and_lets_through():
+    await _say("✅ Принимаю")
+
+    assert consents.accepted(USER)
+    row = consents.get(USER)
+    assert row["source"] == "bot"
+
+    menu = await _say("Привет")
+    assert "формальность" not in menu.answers[0], "второй раз спрашивать не должны"
+
+
+@pytest.mark.asyncio
+async def test_bot_refusal_records_nothing():
+    await _say("❌ Не принимаю")
+
+    assert not consents.accepted(USER)
+
+
+@pytest.mark.asyncio
+async def test_bot_can_delete_without_consenting():
+    notes.add(USER, "конспект")
+
+    msg = await _say("🗑 Удалить мои данные")
+
+    assert web_panel.user_data.count_all(USER) == {}
+    assert "забыл" in msg.answers[0]
+
+
+@pytest.mark.asyncio
+async def test_note_cannot_be_created_before_consent():
+    """Главная причина шлюза в боте: заметки заводят здесь, а не на сайте."""
+    await _say("📝 Добавить заметку")
+    await _say("секретный текст")
+
+    assert web_panel.user_data.count_all(USER).get("notes") is None
+
+
+@pytest.mark.asyncio
+async def test_consent_from_the_panel_opens_the_bot():
+    """Хранилище общее: согласие, данное на сайте, второй раз не спрашивают."""
+    consents.accept(USER, source="panel")
+
+    msg = await _say("Привет")
+
+    assert "формальность" not in msg.answers[0]
+
+
+@pytest.mark.asyncio
+async def test_bot_shows_the_full_text_link(monkeypatch):
+    from vkbot import config
+    from vkbot.handlers import consent as consent_handler
+
+    monkeypatch.setattr(config, "PANEL_BASE_URL", "https://elschedule.ru")
+
+    msg = await _say("что-нибудь")
+
+    assert "https://elschedule.ru/consent" in msg.answers[0]
+    assert "https://elschedule.ru/privacy" in msg.answers[0]
+    assert consent_handler.ACCEPT  # кнопка существует и подписана

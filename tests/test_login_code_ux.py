@@ -13,7 +13,7 @@ import pytest
 
 import web_panel
 from vkbot.handlers import _PIPELINE
-from vkbot.models import panel_codes
+from vkbot.models import consents, panel_codes
 from vkbot.state import store
 
 UID = 555
@@ -30,6 +30,10 @@ class FakeMessage:
 
 async def _dispatch(text: str, uid: int = UID) -> tuple[str | None, list[str]]:
     """Прогоняет сообщение по настоящему пайплайну хендлеров."""
+    # Первым в пайплайне стоит согласие (152-ФЗ, ст. 9), и без него дальше
+    # никто не доходит. Здесь проверяется путь входа, поэтому шлюз открыт;
+    # его собственное поведение — в tests/test_consent.py.
+    consents.accept(uid, source="test")
     message = FakeMessage()
     state = store.get(uid)
     for handler in _PIPELINE:

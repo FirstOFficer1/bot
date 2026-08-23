@@ -3300,6 +3300,14 @@ _CONSENT_TPL = """<!doctype html>
       <div class="upd">Редакция от {{ version }}</div>
       {{ body | safe }}
 
+      {% if not can_accept %}
+      <div class="agree">
+        <p style="color:var(--muted);font-size:14px;margin:0;">
+          Это текст документа. Дать согласие можно в чате с ботом или
+          <a href="{{ url_for('login') }}">войдя в панель</a>.
+        </p>
+      </div>
+      {% else %}
       <form class="agree" method="post" action="{{ url_for('consent_accept') }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <input type="hidden" name="next" value="{{ next_url }}">
@@ -3321,6 +3329,7 @@ _CONSENT_TPL = """<!doctype html>
           <button type="submit">Не согласен(на) — удалить мои данные</button>
         </form>
       </div>
+      {% endif %}
     </div>
   </div>
 </body>
@@ -3334,13 +3343,18 @@ def _render_consent(next_url: str, error: str = "") -> str:
     return render_template_string(
         _CONSENT_TPL, body=body, version=consents.VERSION,
         next_url=next_url, error=error,
+        can_accept=getattr(g, "user", None) is not None,
     )
 
 
 @app.route("/consent", methods=["GET"])
-@login_required
 def consent_page():
-    """Экран согласия. Показывается один раз на редакцию текста."""
+    """Экран согласия. Показывается один раз на редакцию текста.
+
+    Вход не требуется намеренно: бот даёт ссылку на этот текст до того, как
+    человек что-либо о себе сообщил, а требовать согласия с документом, который
+    нельзя прочитать, — бессмыслица. Форма при этом видна только вошедшим.
+    """
     return _render_consent(_safe_next(request.args.get("next"), url_for("dashboard")))
 
 

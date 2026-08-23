@@ -283,15 +283,27 @@ saw. Only `_CONSENT_FREE_ENDPOINTS` pass through: login/logout, the legal pages,
 consent screen itself, `/healthz`, static, and `me_delete_all` — refusing and wiping
 yourself must not require signing anything.
 
-Two consequences worth knowing before you debug something confusing:
+The bot has the same gate: `handlers/consent.py::try_handle` is **first** in
+`_PIPELINE` and swallows everything — including the greeting — until the user taps
+«Принимаю». That is where it matters most, because notes, reminders and subscriptions
+are created in the chat, not on the site. Storage is shared, so consenting on either
+surface opens both. A handler placed above it in `_PIPELINE` becomes reachable without
+consent; a test pins the ordering.
+
+Three consequences worth knowing before you debug something confusing:
 
 - **A new test that logs in and expects 200 will get a 302 to `/consent`.** Call
   `consents.accept(uid, source="test")` in the fixture, the way every panel test file
   already does. The gate itself is covered by `tests/test_consent.py`.
+- **A test that drives `_PIPELINE` needs the same call**, or every message comes back
+  as the consent offer instead of reaching the handler under test.
 - **Seamless VK launch does not imply consent.** VK hands us `vk_user_id`, not
   agreement to our processing, so the Mini App shows the screen once too. This does
   not conflict with VK rule 1.1.2 (that one is about redundant *authentication*);
   1.1.4 requires exactly such an acceptance.
+
+`/consent` renders without login (the bot links to it before the user has told us
+anything) but shows the accept form only to a logged-in user.
 
 `user_data.export_all()` (`/me/export`) and `user_data.purge()` walk the same
 `_USER_TABLES`, so what gets exported and what gets deleted cannot drift apart — a
