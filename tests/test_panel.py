@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from vkbot import config
-from vkbot.models import audit, panel_codes, panel_users
+from vkbot.models import audit, panel_codes, panel_sessions, panel_users
 
 import tools.make_demo_schedule as demo
 import web_panel
@@ -165,6 +165,36 @@ def test_logout_via_post_ends_session(client, admin_id):
     _login(client, admin_id)
     assert client.post("/logout").status_code == 302
     assert client.get("/").status_code == 302
+
+
+def test_logout_all_kicks_other_device(client, admin_id):
+    """Второе устройство теряет доступ, хотя его куку сервер удалить не может.
+
+    RM-токен там отзывается из БД, а Flask-сессия остаётся лежать в браузере —
+    именно она раньше и пускала обратно.
+    """
+    _login(client, admin_id)
+    with web_panel.app.test_client() as other:
+        _login(other, admin_id)
+        assert other.get("/").status_code == 200
+        assert client.post("/logout/all").status_code == 302
+        assert other.get("/").status_code == 302
+
+
+def test_login_right_after_logout_all_works(client, admin_id):
+    """Отзыв не должен выбрасывать вход, сделанный сразу после него."""
+    _login(client, admin_id)
+    client.post("/logout/all")
+    with web_panel.app.test_client() as fresh:
+        _login(fresh, admin_id)
+        assert fresh.get("/").status_code == 200
+
+
+def test_session_without_marker_dies_only_after_revocation(admin_id):
+    """Куки, выданные до появления отметки, не разлогинивают всех разом."""
+    assert panel_sessions.is_live(admin_id, None) is True
+    panel_sessions.revoke_all(admin_id)
+    assert panel_sessions.is_live(admin_id, None) is False
 
 
 # ── REST API ─────────────────────────────────────────────────────────────────

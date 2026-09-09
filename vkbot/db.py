@@ -104,6 +104,14 @@ def init() -> None:
                 last_used_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_rm_tokens_user ON panel_remember_tokens(vk_id);
+            -- «Выйти со всех устройств» отзывает RM-токены, но Flask-сессия —
+            -- подписанная кука на стороне клиента, удалить её на чужом
+            -- устройстве нельзя. Здесь лежит момент отзыва: сессия, выданная
+            -- раньше него, к fallback-входу больше не допускается.
+            CREATE TABLE IF NOT EXISTS panel_session_revocations (
+                vk_id INTEGER PRIMARY KEY,
+                revoked_at TEXT NOT NULL
+            );
             -- Согласие на обработку персональных данных (152-ФЗ, ст. 9).
             -- Хранится версия текста: меняем документ — поднимаем версию, и
             -- согласие спрашивается заново, иначе человек считался бы

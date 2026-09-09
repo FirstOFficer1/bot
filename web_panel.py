@@ -55,8 +55,8 @@ from flask import (
 from vkbot import config as _bot_config
 from vkbot import notifier, vk_names
 from vkbot.models import (
-    audit, consents, heartbeats, panel_codes, panel_remember, panel_users,
-    seen_users, subscriptions, user_data,
+    audit, consents, heartbeats, panel_codes, panel_remember, panel_sessions,
+    panel_users, seen_users, subscriptions, user_data,
 )
 from vkbot.schedule import loader as schedule_loader
 
@@ -573,6 +573,7 @@ def _check_vk_sign():
         session.clear()
         session["logged_in"] = True
         session["vk_id"] = uid
+        session["auth_at"] = panel_sessions.issued_now()
         session.permanent = True
 
     if _launch_is_new(request.args.get("sign", "")):
@@ -602,10 +603,15 @@ def _load_current_user():
             return
         # Битый/просроченный токен — пометим, чтобы after_request почистил куку
         g.rm_clear = True
-    # Fallback: Flask-сессия (только для самого первого запроса после login)
+    # Fallback: Flask-сессия (только для самого первого запроса после login).
+    # Кука живёт у клиента, поэтому «выйти со всех устройств» гасит её не
+    # удалением, а отметкой отзыва: сессия старше отметки сюда не проходит.
     if session.get("logged_in") and session.get("vk_id"):
-        g.user = _build_user(int(session["vk_id"]))
-        return
+        session_uid = int(session["vk_id"])
+        if panel_sessions.is_live(session_uid, session.get("auth_at")):
+            g.user = _build_user(session_uid)
+            return
+        session.clear()
     # Запуск из VK Mini App: подпись уже проверена в _check_vk_sign. Куки в
     # iframe могут быть заблокированы браузером — тогда это единственный путь.
     launch_uid = getattr(g, "vk_launch_uid", None)
@@ -2411,7 +2417,14 @@ _UPLOAD_CONTENT = """
         var txt = document.getElementById('drop-text');
         var form = document.getElementById('upload-form');
         function setName(name) {
-          txt.innerHTML = '<span class="filename">' + name + '</span>';
+          // Имя файла приходит из ФС пользователя и в innerHTML исполняется:
+          // в Linux/macOS файл можно назвать `<img src=x onerror=...>.xlsx`,
+          // и скрипт отработал бы до всякой серверной проверки.
+          txt.textContent = '';
+          var badge = document.createElement('span');
+          badge.className = 'filename';
+          badge.textContent = name;
+          txt.appendChild(badge);
         }
         fi.addEventListener('change', function () {
           if (fi.files && fi.files[0]) setName(fi.files[0].name);
@@ -3435,6 +3448,7 @@ def login_code():
     session.permanent = bool(remember)
     session["logged_in"] = True
     session["vk_id"] = uid
+    session["auth_at"] = panel_sessions.issued_now()
     if remember:
         token = panel_remember.issue(uid)
         _set_remember_cookie(resp, token)
@@ -3459,11 +3473,16 @@ def logout():
 @app.route("/logout/all", methods=["POST"])
 @login_required
 def logout_all():
-    """Отзывает ВСЕ RM-токены пользователя — выход со всех устройств."""
+    """Отзывает ВСЕ сессии пользователя — выход со всех устройств.
+
+    RM-токены удаляются из БД, Flask-сессии на других устройствах гасятся
+    отметкой отзыва: саму куку оттуда не достать.
+    """
     uid = _current_vk_id()
     if uid:
         try:
             panel_remember.revoke_all(uid)
+            panel_sessions.revoke_all(uid)
             audit.log(uid, "auth.logout_all", f"id{uid}", "")
         except Exception:
             pass
