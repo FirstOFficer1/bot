@@ -90,6 +90,18 @@ def run(base_url: str, headed: bool, shots_dir: Path | None, excel: Path) -> int
         page.fill("input[name=code]", code)
         page.click("button[type=submit]")
         page.wait_for_load_state()
+
+        # Согласие (152-ФЗ) — гейт на первом входе: пока оно не дано, панель
+        # уводит на /consent, и дальше по сценарию нет ни одной нужной формы.
+        # В CI база каждый раз чистая, локально согласие уже может быть дано,
+        # поэтому шаг необязательный.
+        if "/consent" in page.url:
+            shot(page, shots_dir, "02-consent")
+            page.check("#agree")
+            page.click("#go")
+            page.wait_for_load_state()
+            step("согласие принято на экране /consent")
+
         check(page.url.rstrip("/") == base_url.rstrip("/"), "вход по коду → дашборд")
         shot(page, shots_dir, "02-dashboard")
 
