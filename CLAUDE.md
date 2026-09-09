@@ -6,20 +6,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A VK (ВКонтакте) chatbot that helps university students: class schedules, notes,
 reminders, deadlines, and push notifications before classes start. It ships with a
-Flask web admin panel for managing schedules/users, and a legacy Telegram bot.
+Flask web admin panel for managing schedules/users.
 
 The codebase and all comments/UI strings are in **Russian** — match that language when
 editing user-facing text and docstrings.
 
 ## Processes (see `Procfile`)
 
-Three independent processes, each its own entry point:
+Two independent processes, each its own entry point:
 
 | Process    | Command               | Stack                  | Notes |
 |------------|-----------------------|------------------------|-------|
 | `vk`       | `python vk_bot.py`    | vkbottle (async)       | The main, actively-developed bot. `vk_bot.py` just calls `vkbot.bot.main`; `python -m vkbot` is equivalent. |
 | `web`      | `python web_panel.py` | Flask + waitress       | Admin panel. `--port 8080` overrides the default 5000; `--dev` falls back to the Werkzeug dev server. **Must run as exactly one process** — see below. |
-| `telegram` | `python bot.py`       | aiogram (async)        | **Legacy monolith** — a 70k+-line single file predating the `vkbot/` refactor. Avoid extending it; new work goes in `vkbot/`. |
 
 ## Tests
 
@@ -55,8 +54,7 @@ catch-all `default` must stay **first** (the last matching filter wins, so a tra
 `default` silently disables every escalation above it), and `ResourceWarning` needs
 `error::pytest.PytestUnraisableExceptionWarning` alongside it — the warning is raised
 during GC, and pytest re-wraps it in its own class. Lint with `ruff check .` — the config (`ruff.toml`) selects only rules that catch real
-defects (pyflakes, import/syntax errors, pylint errors), excludes the legacy `bot.py`,
-and is what CI runs. Widen the rule set one rule at a time, together with the fixes it
+defects (pyflakes, import/syntax errors, pylint errors), and is what CI runs. Widen the rule set one rule at a time, together with the fixes it
 demands.
 
 The end-to-end check needs a live panel and a `.xlsx` to upload:
@@ -87,7 +85,6 @@ CSP/framing breakage that unit tests cannot see because it lives in nginx.
 ```bash
 pip install -r requirements.txt          # runtime: VK bot + panel (this is what prod needs)
 pip install -r requirements-dev.txt      # + pytest, pytest-asyncio, playwright
-pip install -r requirements-legacy.txt   # + aiogram/openai, only for the legacy Telegram bot
 ```
 
 `vk_requirements.txt` is kept as a `-r requirements.txt` shim so old deploy scripts
@@ -261,12 +258,13 @@ otherwise a way to swap the schedule leaving no trace in `/admin/audit`), call
 `_ics_cache_clear()`, call `_sync_legacy_schedule_db()`, and return a generic error
 message — `str(e)` leaks paths and SQL to the caller.
 
-**Legacy `s.db`.** The panel re-imports every schedule change into `s.db`, the old
-Telegram bot's database, so the two don't drift; `_sync_legacy_schedule_db()` is the
-single place that does it, and every mutating path (panel/API × upload/rollback) calls
-it. The path follows `DATA_DIR` (override: `LEGACY_SCHEDULE_DB`) — the legacy `bot.py`
-itself still opens a bare relative `"s.db"`, so it only agrees when started from the
-project root.
+**Legacy `s.db` — now vestigial.** The panel re-imports every schedule change into
+`s.db` via `_sync_legacy_schedule_db()`, called from every mutating path (panel/API ×
+upload/rollback); the path follows `DATA_DIR` (override: `LEGACY_SCHEDULE_DB`). It
+existed to keep the old Telegram bot's database from drifting — but that bot
+(`bot.py`) was deleted on 2026-09-09, so nothing reads `s.db` any more. The writes are
+harmless and still guarded, and removing them touches all four mutating paths, so it
+is left as a separate cleanup rather than folded into the deletion.
 
 **Single-process requirement.** `_PENDING_UPLOADS`, `_LAST_BROADCAST` and `_ICS_CACHE`
 are in-memory module state. A second worker breaks schedule uploads ("unknown or

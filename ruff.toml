@@ -6,9 +6,7 @@
 target-version = "py310"
 line-length = 100
 
-# Легаси-монолит Telegram-бота не поддерживается и не расширяется (см. CLAUDE.md),
-# гонять по нему линтер бессмысленно — он останется красным навсегда.
-exclude = ["bot.py", ".venv", "schedule_versions"]
+exclude = [".venv", "schedule_versions"]
 
 [lint]
 select = [

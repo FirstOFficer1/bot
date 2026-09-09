@@ -1,5 +1,5 @@
 #!/bin/bash
-# Запуск VK-бота. Для Telegram используется bot.py отдельным процессом.
+# Запуск VK-бота.
 
 set -e
 echo "Starting VK bot..."

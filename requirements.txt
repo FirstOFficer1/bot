@@ -6,7 +6,6 @@
 #   pip install -r requirements.txt
 #
 # Тесты и Playwright — в requirements-dev.txt.
-# Легаси Telegram-бот (bot.py) — в requirements-legacy.txt.
 
 # ── VK-бот ───────────────────────────────────────────────────────────────────
 vkbottle>=4.10,<5
