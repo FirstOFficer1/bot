@@ -173,21 +173,23 @@ def test_logout_all_kicks_other_device(client, admin_id):
     RM-токен там отзывается из БД, а Flask-сессия остаётся лежать в браузере —
     именно она раньше и пускала обратно.
     """
+    # Второй клиент — без `with`: вложенный контекст test_client снимает
+    # request-контекст внешнего, и тест падает на ровном месте.
+    other = web_panel.app.test_client()
     _login(client, admin_id)
-    with web_panel.app.test_client() as other:
-        _login(other, admin_id)
-        assert other.get("/").status_code == 200
-        assert client.post("/logout/all").status_code == 302
-        assert other.get("/").status_code == 302
+    _login(other, admin_id)
+    assert other.get("/").status_code == 200
+    assert client.post("/logout/all").status_code == 302
+    assert other.get("/").status_code == 302
 
 
 def test_login_right_after_logout_all_works(client, admin_id):
     """Отзыв не должен выбрасывать вход, сделанный сразу после него."""
+    fresh = web_panel.app.test_client()
     _login(client, admin_id)
     client.post("/logout/all")
-    with web_panel.app.test_client() as fresh:
-        _login(fresh, admin_id)
-        assert fresh.get("/").status_code == 200
+    _login(fresh, admin_id)
+    assert fresh.get("/").status_code == 200
 
 
 def test_session_without_marker_dies_only_after_revocation(admin_id):
