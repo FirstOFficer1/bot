@@ -20,7 +20,7 @@ import logging
 
 from .. import config
 from ..keyboards import build as _kb
-from ..models import audit, consents, user_data
+from ..models import audit, consents, seen_users, user_data
 from ..state import store
 
 log = logging.getLogger(__name__)
@@ -58,12 +58,21 @@ def _offer() -> str:
     )
 
 
+def _accepted_and_seen(uid: int) -> bool:
+    """Согласие есть? Заодно отмечаем посещение — но только если есть."""
+    if not consents.accepted(uid):
+        return False
+    seen_users.touch(uid)
+    return True
+
+
 async def try_handle(_bot, message, _state, text, uid) -> bool:
     """Пропускает дальше только тех, кто согласился (152-ФЗ, ст. 9)."""
     # Этот запрос выполняется на КАЖДОЕ входящее сообщение — хендлер первый в
     # пайплайне. Синхронно он останавливал бы весь бот всякий раз, когда база
-    # занята панелью.
-    if await asyncio.to_thread(consents.accepted, uid):
+    # занята панелью. Отметка о посещении идёт тем же походом в БД и только для
+    # согласившихся: до согласия записывать человека в seen_users нет основания.
+    if await asyncio.to_thread(_accepted_and_seen, uid):
         return False
 
     text = (text or "").strip()
@@ -87,19 +96,13 @@ async def try_handle(_bot, message, _state, text, uid) -> bool:
 
     if text == PURGE:
         def _purge_everything() -> dict:
-            # Состояние диалога пишется фоновым потоком. Сначала убираем его из
-            # памяти и дожидаемся очереди — иначе отложенная запись прилетит
-            # уже ПОСЛЕ purge(), и строка в user_states воскреснет: человек
-            # просил всё забыть, а мы бы оставили след.
-            store.pop(uid, None)
-            store.flush()
-            removed = user_data.purge(uid)
-            # И ещё раз: пока шло удаление, бот мог принять от этого же человека
-            # следующее сообщение и завести состояние заново. Окно узкое, но
-            # молча оставить после «забудь меня» чужую строку нельзя.
-            store.pop(uid, None)
-            store.flush()
-            return removed
+            # forget(), а не pop()+flush(): состояние пишется фоновым потоком, и
+            # у flush() есть тайм-аут — по его истечении отложенная запись
+            # воскресила бы строку уже после purge(). forget() под замком
+            # применения выкидывает пользователя и из памяти, и из очереди,
+            # поэтому воскрешать нечему.
+            store.forget(uid)
+            return user_data.purge(uid)
 
         try:
             removed = await asyncio.to_thread(_purge_everything)

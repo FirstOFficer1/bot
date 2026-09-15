@@ -21,17 +21,48 @@ _WEEK_ORDER = ["Понедельник", "Вторник", "Среда", "Чет
 _CHUNK_LIMIT = 3500
 
 
-def _week_chunks(course: int, direction: str, week_type: str) -> list[str]:
-    """Расписание на неделю, нарезанное по границам дней под лимит сообщения."""
+def _split_long(text: str, limit: int) -> list[str]:
+    """Режет слишком длинный кусок по строкам, а совсем длинную строку — силой.
+
+    Нужен для дня, который сам не влезает в сообщение: раньше такой день уходил
+    целиком, и VK обрезал его молча — в чате это выглядит как пропавшие пары.
+    """
+    parts: list[str] = []
+    current = ""
+    for line in text.split("\n"):
+        while len(line) > limit:
+            if current:
+                parts.append(current)
+                current = ""
+            parts.append(line[:limit])
+            line = line[limit:]
+        if current and len(current) + len(line) + 1 > limit:
+            parts.append(current)
+            current = line
+        else:
+            current = f"{current}\n{line}" if current else line
+    if current:
+        parts.append(current)
+    return parts
+
+
+def _week_chunks(course: int, direction: str, week_type: str, reserve: int = 0) -> list[str]:
+    """Расписание на неделю, нарезанное под лимит сообщения.
+
+    `reserve` — место под заголовок, который вызывающий добавит к первому куску:
+    без него заголовок мог перевесить лимит уже после нарезки.
+    """
     chunks: list[str] = []
     current = ""
     for day in _WEEK_ORDER:
         block = f"— {day} —\n{repo.get_day(course, direction, day, week_type)}"
-        if current and len(current) + len(block) + 2 > _CHUNK_LIMIT:
-            chunks.append(current)
-            current = block
-        else:
-            current = f"{current}\n\n{block}" if current else block
+        for piece in _split_long(block, _CHUNK_LIMIT - reserve):
+            limit = _CHUNK_LIMIT - (reserve if not chunks and not current else 0)
+            if current and len(current) + len(piece) + 2 > limit:
+                chunks.append(current)
+                current = piece
+            else:
+                current = f"{current}\n\n{piece}" if current else piece
     if current:
         chunks.append(current)
     return chunks
@@ -40,10 +71,14 @@ def _week_chunks(course: int, direction: str, week_type: str) -> list[str]:
 async def _send_week(message, course: int, direction: str, week_type: str, keyboard: str) -> None:
     """Шлёт неделю одним или несколькими сообщениями; клавиатура — на последнем."""
     wlabel = "чётная" if week_type == "чёт" else "нечётная"
+    header = f"📖 Вся неделя ({wlabel})\n{course} курс · {direction}\n\n"
     # Внутри — шесть запросов к расписанию подряд; в потоке они не держат
-    # event loop, пока человек ждёт неделю целиком.
-    chunks = await asyncio.to_thread(_week_chunks, course, direction, week_type)
-    chunks[0] = f"📖 Вся неделя ({wlabel})\n{course} курс · {direction}\n\n{chunks[0]}"
+    # event loop, пока человек ждёт неделю целиком. Длину заголовка отдаём
+    # заранее, иначе он перевесил бы лимит уже после нарезки.
+    chunks = await asyncio.to_thread(
+        _week_chunks, course, direction, week_type, len(header)
+    )
+    chunks[0] = header + chunks[0]
     for i, chunk in enumerate(chunks):
         is_last = i == len(chunks) - 1
         await message.answer(chunk, keyboard=keyboard if is_last else None)

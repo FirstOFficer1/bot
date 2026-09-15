@@ -44,6 +44,13 @@ class StateStore:
         self._queue: queue.Queue[tuple[str, int, str | None]] = queue.Queue()
         self._writer: threading.Thread | None = None
         self._writer_lock = threading.Lock()
+        # Защищает словарь в памяти: patch() — это чтение-изменение-запись, а
+        # часть хендлеров теперь выполняется в рабочих потоках, и два обновления
+        # состояния одного человека могли перетереть друг друга.
+        self._data_lock = threading.Lock()
+        # Берётся на время применения операции. Нужен forget(), чтобы удаление
+        # данных не гонялось с записью, которую писатель уже начал.
+        self._apply_lock = threading.Lock()
 
     # ── фоновая запись ───────────────────────────────────────────────────────
     def _ensure_writer(self) -> None:
@@ -60,7 +67,8 @@ class StateStore:
         while True:
             kind, uid, payload = self._queue.get()
             try:
-                self._apply_with_retries(kind, uid, payload)
+                with self._apply_lock:
+                    self._apply_with_retries(kind, uid, payload)
             finally:
                 # Поток обязан пережить сбойную запись: иначе одна занятая база
                 # молча похоронила бы persistence до перезапуска сервиса. И
@@ -165,20 +173,53 @@ class StateStore:
         return self._data[uid]
 
     def __setitem__(self, uid: int, state: Any) -> None:
-        self._data[uid] = state
+        with self._data_lock:
+            self._data[uid] = state
         self._enqueue(_SET, uid, json.dumps(state, ensure_ascii=False))
 
     def pop(self, uid: int, *args: Any) -> Any:
-        result = self._data.pop(uid, *args)
+        with self._data_lock:
+            result = self._data.pop(uid, *args)
         self._enqueue(_DELETE, uid)
         return result
 
     def patch(self, uid: int, **kwargs: Any) -> dict:
-        """Мерджит словарь-состояние с новыми полями и сохраняет."""
-        state = dict(self._data.get(uid) or {})
-        state.update(kwargs)
-        self[uid] = state
+        """Мерджит словарь-состояние с новыми полями и сохраняет.
+
+        Чтение и запись под одним замком: раньше все вызовы шли в event loop и
+        сериализовались сами собой, а теперь часть хендлеров работает в потоках,
+        и два обновления подряд могли потерять друг друга.
+        """
+        with self._data_lock:
+            state = dict(self._data.get(uid) or {})
+            state.update(kwargs)
+            self._data[uid] = state
+        self._enqueue(_SET, uid, json.dumps(state, ensure_ascii=False))
         return state
+
+    def forget(self, uid: int) -> None:
+        """Убирает пользователя из памяти и из ещё не разобранной очереди.
+
+        Для удаления данных по 152-ФЗ `flush()` не годится: у него тайм-аут, и
+        по его истечении отложенная запись всё равно воскресила бы строку уже
+        после purge(). Здесь же под замком применения гарантируется, что ни одна
+        операция этого пользователя не выполняется и не осталась в очереди —
+        значит после возврата purge() удаляет строки навсегда.
+        """
+        with self._apply_lock:
+            with self._data_lock:
+                self._data.pop(uid, None)
+            kept: list[tuple[str, int, str | None]] = []
+            while True:
+                try:
+                    item = self._queue.get_nowait()
+                except queue.Empty:
+                    break
+                self._queue.task_done()
+                if item[1] != uid:
+                    kept.append(item)
+            for item in kept:
+                self._queue.put(item)
 
 
 # Глобальный синглтон — импортируется хендлерами

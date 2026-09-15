@@ -8,8 +8,6 @@
 
 from __future__ import annotations
 
-import asyncio
-
 from vkbottle.bot import Message
 
 from . import (
@@ -23,7 +21,6 @@ from . import (
     schedule,
     subscriptions,
 )
-from ..models import seen_users
 from ..state import store
 
 # Порядок имеет значение. Первым идёт согласие: пока его нет, обрабатывать
@@ -53,11 +50,11 @@ def register(bot) -> None:
     @bot.on.message()
     async def dispatch(message: Message) -> None:
         uid = message.from_id
-        # Регистрируем юзера моментально — чтобы /admin/users показал его сразу,
-        # ещё до того, как он что-то сохранит. В поток — потому что запись идёт
-        # на КАЖДОЕ входящее сообщение, и при занятой базе синхронный вызов
-        # тормозил бы разбор сообщений целиком.
-        await asyncio.to_thread(seen_users.touch, uid)
+        # Отметка о посещении переехала в consent.try_handle: записывать vk_id и
+        # время до согласия нельзя — это ровно то, о чём consent.py и говорит
+        # («иначе первое же „Привет“ пришлось бы записать в базу без
+        # основания»), а seen_users числится среди персональных данных в
+        # user_data._USER_TABLES.
         text = (message.text or "").strip()
         state = store.get(uid)
         for handler in _PIPELINE:
