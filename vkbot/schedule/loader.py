@@ -10,6 +10,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import secrets
 import shutil
 import sqlite3
 import tempfile
@@ -94,6 +96,32 @@ def preview(excel_path: str) -> Preview:
     )
 
 
+def _reserve_version_file(ts: str, safe_name: str) -> Path:
+    """Занимает имя под архив версии, гарантированно не затирая чужой.
+
+    Имя складывалось из времени с точностью до секунды и исходного имени файла,
+    поэтому два коммита одноимённого файла в одну секунду получали один и тот
+    же путь: архив первой версии молча перезаписывался второй. Заметно это
+    стало бы только при откате — он поднял бы не то расписание, которое
+    записано в журнале версий.
+
+    O_EXCL, а не проверка существования: между `exists()` и копированием
+    вклинивается ровно та же гонка, которую мы чиним.
+    """
+    config.SCHEDULE_VERSIONS_DIR.mkdir(parents=True, exist_ok=True)
+    stem, dot, ext = safe_name.partition(".")
+    for attempt in range(50):
+        name = f"{ts}_{safe_name}" if attempt == 0 else f"{ts}_{stem}-{secrets.token_hex(3)}{dot}{ext}"
+        path = config.SCHEDULE_VERSIONS_DIR / name
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            continue
+        os.close(fd)
+        return path
+    raise RuntimeError("не удалось подобрать свободное имя для архива расписания")
+
+
 def commit(excel_path: str, uploaded_by: str, original_filename: str) -> dict:
     """Атомарная замена расписания + бэкап + версия + hot-reload.
 
@@ -116,7 +144,7 @@ def commit(excel_path: str, uploaded_by: str, original_filename: str) -> dict:
     # 2. Сохраняем оригинальный Excel
     ts = now_msk().strftime("%Y%m%d_%H%M%S")
     safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in original_filename)
-    saved_path = config.SCHEDULE_VERSIONS_DIR / f"{ts}_{safe_name}"
+    saved_path = _reserve_version_file(ts, safe_name)
     shutil.copyfile(excel_path, saved_path)
 
     # 3. Импорт

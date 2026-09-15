@@ -116,22 +116,29 @@ def issue(user_id: int) -> tuple[str, int]:
 
 
 def verify(code: str) -> int | None:
-    """Проверяет код, помечает использованным, возвращает user_id или None."""
+    """Проверяет код, помечает использованным, возвращает user_id или None.
+
+    Гашение и проверка — один UPDATE, а не SELECT с последующим UPDATE. Раздельно
+    они давали гонку: панель работает в четыре потока, и два запроса успевали
+    прочитать один и тот же непогашенный код, после чего оба пускали в панель —
+    «одноразовый» код срабатывал дважды. Здесь же строку меняет только один
+    писатель, второму UPDATE подходит уже ноль строк.
+    """
     if not code or len(code) != CODE_LEN or not code.isdigit():
         return None
     cutoff = (now_msk() - timedelta(minutes=CODE_TTL_MIN)).isoformat(
         timespec="seconds"
     )
     with connect() as conn:
-        row = conn.execute(
-            "SELECT user_id FROM panel_login_codes "
-            "WHERE code=? AND used=0 AND created_at >= ?",
+        # fetchall, а не fetchone: недосчитанный курсор оставляет оператор
+        # незавершённым, и коммит на выходе из connect() может об него споткнуться.
+        rows = conn.execute(
+            "UPDATE panel_login_codes SET used=1 "
+            "WHERE code=? AND used=0 AND created_at >= ? "
+            "RETURNING user_id",
             (code, cutoff),
-        ).fetchone()
-        if not row:
-            return None
-        conn.execute("UPDATE panel_login_codes SET used=1 WHERE code=?", (code,))
-        return int(row[0])
+        ).fetchall()
+    return int(rows[0][0]) if rows else None
 
 
 def has_recent_code(user_id: int, minutes: int = 60) -> bool:

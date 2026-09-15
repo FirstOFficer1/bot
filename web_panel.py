@@ -3674,32 +3674,56 @@ _PENDING_UPLOADS: dict[str, tuple[str, str, float]] = {}
 _PENDING_TTL_SEC = 30 * 60  # 30 минут
 
 
+# Панель живёт в четыре потока, а применение загрузки занимает секунды: пока
+# коммит шёл, второй запрос с тем же токеном успевал прочитать его и применить
+# ту же загрузку повторно. Поэтому токен именно ЗАБИРАЕТСЯ (pop) до начала
+# работы, а не удаляется после неё.
+_PENDING_LOCK = threading.Lock()
+
+
+def _discard_tmp(path: str) -> None:
+    try:
+        os.unlink(path)
+    except Exception:
+        pass
+
+
 def _gc_pending_uploads() -> int:
     """Удаляет просроченные загрузки + их tmp-файлы. Возвращает кол-во удалённых."""
     import time as _time
     now = _time.time()
-    expired = [
-        t for t, item in _PENDING_UPLOADS.items()
-        if now - item[2] > _PENDING_TTL_SEC
-    ]
+    with _PENDING_LOCK:
+        expired = [
+            t for t, item in _PENDING_UPLOADS.items()
+            if now - item[2] > _PENDING_TTL_SEC
+        ]
     for t in expired:
         _drop_pending(t)
     return len(expired)
 
 
 def _drop_pending(token: str) -> None:
-    item = _PENDING_UPLOADS.pop(token, None)
+    with _PENDING_LOCK:
+        item = _PENDING_UPLOADS.pop(token, None)
     if item:
-        try:
-            os.unlink(item[0])
-        except Exception:
-            pass
+        _discard_tmp(item[0])
+
+
+def _claim_pending(token: str) -> tuple[str, str, float] | None:
+    """Забирает загрузку насовсем: одновременный второй коммит уйдёт ни с чем.
+
+    Файл при этом не удаляем — он нужен тому, кто выиграл; убрать его обязан
+    вызывающий, когда закончит.
+    """
+    with _PENDING_LOCK:
+        return _PENDING_UPLOADS.pop(token, None)
 
 
 def _add_pending(token: str, tmp_path: str, original: str) -> None:
     """Регистрирует отложенную загрузку + триггерит GC старых."""
     import time as _time
-    _PENDING_UPLOADS[token] = (tmp_path, original, _time.time())
+    with _PENDING_LOCK:
+        _PENDING_UPLOADS[token] = (tmp_path, original, _time.time())
     _gc_pending_uploads()
 
 
@@ -3824,7 +3848,7 @@ def _sync_legacy_schedule_db(excel_path: str, context: str) -> None:
 def upload_commit():
     token = request.form.get("token", "")
     notify = request.form.get("notify") == "1"
-    item = _PENDING_UPLOADS.get(token)
+    item = _claim_pending(token)
     if not item:
         return redirect(url_for("upload_page"))
     excel_path, original, _ts = item
@@ -3857,7 +3881,7 @@ def upload_commit():
             subscriber_count=_subscriber_count(),
         )
     finally:
-        _drop_pending(token)
+        _discard_tmp(excel_path)
     # Подсчёт конфликтов в свежезалитом расписании — показываем сразу на странице
     conflicts = _find_conflicts()
     return _render_page(
@@ -3991,7 +4015,7 @@ def api_schedule_commit():
     if not _check_api_token():
         return jsonify({"error": "unauthorized"}), 401
     token = (request.json or {}).get("token") if request.is_json else request.form.get("token")
-    item = _PENDING_UPLOADS.get(token or "")
+    item = _claim_pending(token or "")
     if not item:
         return jsonify({"error": "unknown or expired token"}), 404
     excel_path, original, _ts = item
@@ -4011,7 +4035,7 @@ def api_schedule_commit():
         logging.exception("api schedule commit failed")
         return jsonify({"error": "internal error"}), 500
     finally:
-        _drop_pending(token or "")
+        _discard_tmp(excel_path)
 
 
 @app.route("/api/schedule/versions", methods=["GET"])
