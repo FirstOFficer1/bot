@@ -43,6 +43,12 @@ def _schema():
 def _clean_tables():
     """Между тестами чистим пользовательские таблицы."""
     yield
+    # Состояние пишется фоновым потоком: без flush() запись, поставленная в
+    # очередь в конце теста, прилетела бы уже ПОСЛЕ очистки — и протекла бы
+    # в следующий тест.
+    from vkbot.state import store
+
+    store.flush()
     with db.connect() as conn:
         for table in (
             "notes", "reminders", "deadlines", "subscriptions", "user_states",

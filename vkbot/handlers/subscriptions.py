@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 
 from ..keyboards import MAIN_KB, build
@@ -89,7 +90,7 @@ def _reset_to_menu(uid: int) -> tuple[str, str]:
 async def try_handle(_bot, message, state, text, uid) -> bool:
     # ── Меню подписок ────────────────────────────────────────────────────────
     if text == "🔔 Подписки на пары":
-        ans, keyboard, sub_map = _subs_screen(uid)
+        ans, keyboard, sub_map = await asyncio.to_thread(_subs_screen, uid)
         store[uid] = {"state": "subs", "sub_map": sub_map}
         await message.answer(ans, keyboard=keyboard)
         return True
@@ -100,7 +101,7 @@ async def try_handle(_bot, message, state, text, uid) -> bool:
             await message.answer("Главное меню:", keyboard=MAIN_KB)
             return True
         if text == "➕ Добавить подписку":
-            pref = user_prefs.get(uid)
+            pref = await asyncio.to_thread(user_prefs.get, uid)
             if pref:
                 pref_course, pref_dir = pref
                 store[uid] = {
@@ -121,20 +122,20 @@ async def try_handle(_bot, message, state, text, uid) -> bool:
         if num is not None:
             sub_map = state.get("sub_map", {})
             if num in sub_map:
-                model.delete(sub_map[num], uid)
+                await asyncio.to_thread(model.delete, sub_map[num], uid)
                 # Остаёмся на экране подписок: отписка редко бывает одиночной,
                 # да и подтверждение видно сразу над обновлённым списком.
-                ans, keyboard, new_map = _subs_screen(uid)
+                ans, keyboard, new_map = await asyncio.to_thread(_subs_screen, uid)
                 store[uid] = {"state": "subs", "sub_map": new_map}
                 await message.answer(f"✅ Отписка выполнена.\n\n{ans}", keyboard=keyboard)
             else:
-                ans, keyboard, new_map = _subs_screen(uid)
+                ans, keyboard, new_map = await asyncio.to_thread(_subs_screen, uid)
                 store[uid] = {"state": "subs", "sub_map": new_map}
                 await message.answer(
                     f"❌ Подписка с таким номером не найдена.\n\n{ans}", keyboard=keyboard
                 )
             return True
-        ans, keyboard, sub_map = _subs_screen(uid)
+        ans, keyboard, sub_map = await asyncio.to_thread(_subs_screen, uid)
         store[uid] = {"state": "subs", "sub_map": sub_map}
         await message.answer(f"Нажми кнопку ниже.\n\n{ans}", keyboard=keyboard)
         return True
@@ -144,7 +145,7 @@ async def try_handle(_bot, message, state, text, uid) -> bool:
         pref_course = state["pref_course"]
         pref_dir = state["pref_dir"]
         if text == "◀ Назад":
-            ans, keyboard = _reset_to_menu(uid)
+            ans, keyboard = await asyncio.to_thread(_reset_to_menu, uid)
             await message.answer(ans, keyboard=keyboard)
             return True
         if text == "🔄 Выбрать другое":
@@ -152,14 +153,14 @@ async def try_handle(_bot, message, state, text, uid) -> bool:
             await message.answer("Выбери курс:", keyboard=_course_kb())
             return True
         if text.startswith("✅"):
-            if model.exists(uid, pref_course, pref_dir):
+            if await asyncio.to_thread(model.exists, uid, pref_course, pref_dir):
                 store.pop(uid, None)
                 await message.answer(
                     f"ℹ️ Ты уже подписан на {pref_course} курс — {pref_dir}.",
                     keyboard=MAIN_KB,
                 )
             else:
-                model.add(uid, pref_course, pref_dir)
+                await asyncio.to_thread(model.add, uid, pref_course, pref_dir)
                 store.pop(uid, None)
                 await message.answer(
                     f"✅ Подписка добавлена!\n{pref_course} курс — {pref_dir}\n\n"
@@ -173,7 +174,7 @@ async def try_handle(_bot, message, state, text, uid) -> bool:
     # ── Выбор курса/направления вручную ──────────────────────────────────────
     if isinstance(state, dict) and state.get("step") == "sub_course":
         if text == "◀ Назад":
-            ans, keyboard = _reset_to_menu(uid)
+            ans, keyboard = await asyncio.to_thread(_reset_to_menu, uid)
             await message.answer(ans, keyboard=keyboard)
             return True
         if text.isdecimal() and int(text) in repo.directions_by_course:
@@ -191,14 +192,14 @@ async def try_handle(_bot, message, state, text, uid) -> bool:
             return True
         direction = repo.resolve_direction(text, course)
         if direction:
-            if model.exists(uid, course, direction):
+            if await asyncio.to_thread(model.exists, uid, course, direction):
                 store.pop(uid, None)
                 await message.answer(
                     f"ℹ️ Ты уже подписан на {course} курс — {direction}.",
                     keyboard=MAIN_KB,
                 )
             else:
-                model.add(uid, course, direction)
+                await asyncio.to_thread(model.add, uid, course, direction)
                 store.pop(uid, None)
                 await message.answer(
                     f"✅ Подписка добавлена!\n{course} курс — {direction}\n\n"

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import re
 
 from ..config import MAX_INPUT_LEN, NOTES_LIMIT
@@ -33,7 +35,7 @@ async def try_handle(_bot, message, state, text, uid) -> bool:
                 keyboard=CANCEL_KB,
             )
             return True
-        if len(model.list_for(uid)) >= NOTES_LIMIT:
+        if len(await asyncio.to_thread(model.list_for, uid)) >= NOTES_LIMIT:
             store.pop(uid, None)
             await message.answer(
                 f"❌ Достигнут лимит ({NOTES_LIMIT} заметок). "
@@ -41,14 +43,14 @@ async def try_handle(_bot, message, state, text, uid) -> bool:
                 keyboard=MAIN_KB,
             )
             return True
-        model.add(uid, text)
+        await asyncio.to_thread(model.add, uid, text)
         store.pop(uid, None)
         await message.answer("✅ Заметка сохранена!", keyboard=MAIN_KB)
         return True
 
     # ── Список и удаление ────────────────────────────────────────────────────
     if text == "📋 Мои заметки":
-        notes = model.list_for(uid)
+        notes = await asyncio.to_thread(model.list_for, uid)
         if not notes:
             await message.answer("У тебя пока нет заметок.", keyboard=MAIN_KB)
             return True
@@ -84,14 +86,14 @@ async def try_handle(_bot, message, state, text, uid) -> bool:
         to_del_ids = [note_map[str(n)] for n in nums if str(n) in note_map]
         not_found = [n for n in nums if str(n) not in note_map]
         if to_del_ids:
-            model.delete(to_del_ids, uid)
+            await asyncio.to_thread(model.delete, to_del_ids, uid)
         resp_parts = []
         if to_del_ids:
             deleted_nums = ", ".join(str(n) for n in nums if str(n) in note_map)
             resp_parts.append(f"✅ Удалены заметки: {deleted_nums}")
         if not_found:
             resp_parts.append(f"❌ Не найдены: {', '.join(map(str, not_found))}")
-        remaining = model.list_for(uid)
+        remaining = await asyncio.to_thread(model.list_for, uid)
         if remaining:
             rem = "\nОставшиеся заметки:\n\n"
             for i, (nid, nt, ts) in enumerate(remaining, 1):

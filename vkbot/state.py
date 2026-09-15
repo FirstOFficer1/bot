@@ -1,19 +1,114 @@
-"""Персистентные состояния пользователей (для пошаговых диалогов)."""
+"""Персистентные состояния пользователей (для пошаговых диалогов).
+
+Чтения идут из памяти, а записи — через фонового писателя, а не прямо из
+корутины. Причина: состояние трогается на КАЖДОМ шаге любого диалога (в
+хендлерах это под шестьдесят вызовов), бот однопоточный и асинхронный, а
+`db.connect()` ставит `busy_timeout=5000`. Пока запись шла синхронно, занятая
+база останавливала не свой диалог, а разбор сообщений целиком — весь бот.
+
+Такой подход чинит все вызывающие места сразу и не требует `await` на каждом
+`store[uid] = ...`: в памяти состояние обновляется мгновенно, а SQLite догоняет.
+
+Плата — долговечность: при жёстком падении процесса теряются записи, которые
+ещё не разобраны из очереди (миллисекунды). Для состояния диалога это приемлемо
+— человек повторит последнее нажатие; ради этого не стоит держать весь бот.
+Очередь разбирает один поток, поэтому порядок операций сохраняется.
+"""
 
 from __future__ import annotations
 
+import atexit
 import json
+import logging
+import queue
+import threading
 from typing import Any
 
 from .db import connect
 
+_SET = "set"
+_DELETE = "delete"
+
 
 class StateStore:
-    """In-memory кэш + persistence в SQLite таблице user_states."""
+    """In-memory кэш + отложенная persistence в SQLite таблице user_states."""
 
     def __init__(self) -> None:
         self._data: dict[int, Any] = {}
+        self._queue: queue.Queue[tuple[str, int, str | None]] = queue.Queue()
+        self._writer: threading.Thread | None = None
+        self._writer_lock = threading.Lock()
 
+    # ── фоновая запись ───────────────────────────────────────────────────────
+    def _ensure_writer(self) -> None:
+        """Поднимает писателя лениво и заново, если прошлый почему-то умер."""
+        with self._writer_lock:
+            if self._writer is not None and self._writer.is_alive():
+                return
+            self._writer = threading.Thread(
+                target=self._drain, name="state-writer", daemon=True
+            )
+            self._writer.start()
+
+    def _drain(self) -> None:
+        while True:
+            kind, uid, payload = self._queue.get()
+            try:
+                self._apply(kind, uid, payload)
+            except Exception:
+                # Поток обязан пережить сбойную запись: иначе одна занятая база
+                # молча похоронила бы persistence до перезапуска сервиса.
+                logging.exception("Не удалось сохранить состояние uid=%s", uid)
+            finally:
+                self._queue.task_done()
+
+    def _apply(self, kind: str, uid: int, payload: str | None) -> None:
+        with connect() as conn:
+            if kind == _SET:
+                conn.execute(
+                    "INSERT OR REPLACE INTO user_states (user_id, state_json) VALUES (?,?)",
+                    (uid, payload),
+                )
+            else:
+                conn.execute("DELETE FROM user_states WHERE user_id=?", (uid,))
+
+    def _enqueue(self, kind: str, uid: int, payload: str | None = None) -> None:
+        self._queue.put((kind, uid, payload))
+        self._ensure_writer()
+
+    def flush(self) -> None:
+        """Дожидается разбора очереди.
+
+        Нужно там, где состояние обязано оказаться в базе прямо сейчас: удаление
+        своих данных (152-ФЗ) и тесты, которые иначе ловили бы чужие записи,
+        прилетевшие после очистки таблиц.
+        """
+        if self._queue.empty():
+            return
+        try:
+            self._ensure_writer()
+        except RuntimeError:
+            # atexit на выходе из интерпретатора: новых потоков уже не создать,
+            # поэтому дописываем очередь прямо здесь. Молча потерять последние
+            # записи хуже — человек увидел бы диалог откатившимся на шаг назад.
+            self._drain_remaining()
+            return
+        self._queue.join()
+
+    def _drain_remaining(self) -> None:
+        while True:
+            try:
+                kind, uid, payload = self._queue.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                self._apply(kind, uid, payload)
+            except Exception:
+                logging.exception("Не удалось сохранить состояние uid=%s", uid)
+            finally:
+                self._queue.task_done()
+
+    # ── API ──────────────────────────────────────────────────────────────────
     def load_all(self) -> None:
         with connect() as conn:
             rows = conn.execute("SELECT user_id, state_json FROM user_states").fetchall()
@@ -31,16 +126,11 @@ class StateStore:
 
     def __setitem__(self, uid: int, state: Any) -> None:
         self._data[uid] = state
-        with connect() as conn:
-            conn.execute(
-                "INSERT OR REPLACE INTO user_states (user_id, state_json) VALUES (?,?)",
-                (uid, json.dumps(state, ensure_ascii=False)),
-            )
+        self._enqueue(_SET, uid, json.dumps(state, ensure_ascii=False))
 
     def pop(self, uid: int, *args: Any) -> Any:
         result = self._data.pop(uid, *args)
-        with connect() as conn:
-            conn.execute("DELETE FROM user_states WHERE user_id=?", (uid,))
+        self._enqueue(_DELETE, uid)
         return result
 
     def patch(self, uid: int, **kwargs: Any) -> dict:
@@ -53,3 +143,6 @@ class StateStore:
 
 # Глобальный синглтон — импортируется хендлерами
 store = StateStore()
+
+# При штатной остановке (systemd шлёт SIGINT) успеваем дописать очередь.
+atexit.register(store.flush)

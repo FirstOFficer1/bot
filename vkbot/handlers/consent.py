@@ -15,11 +15,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from .. import config
 from ..keyboards import build as _kb
 from ..models import audit, consents, user_data
+from ..state import store
 
 log = logging.getLogger(__name__)
 
@@ -58,16 +60,21 @@ def _offer() -> str:
 
 async def try_handle(_bot, message, _state, text, uid) -> bool:
     """Пропускает дальше только тех, кто согласился (152-ФЗ, ст. 9)."""
-    if consents.accepted(uid):
+    # Этот запрос выполняется на КАЖДОЕ входящее сообщение — хендлер первый в
+    # пайплайне. Синхронно он останавливал бы весь бот всякий раз, когда база
+    # занята панелью.
+    if await asyncio.to_thread(consents.accepted, uid):
         return False
 
     text = (text or "").strip()
 
     if text == ACCEPT:
-        consents.accept(uid, source="bot")
+        await asyncio.to_thread(consents.accept, uid, source="bot")
         try:
-            audit.log(uid, "consent.accept", f"id={uid}",
-                      f"версия {consents.VERSION}, бот")
+            await asyncio.to_thread(
+                audit.log, uid, "consent.accept", f"id={uid}",
+                f"версия {consents.VERSION}, бот",
+            )
         except Exception:
             # Журнал — не причина не пустить человека дальше.
             log.exception("не удалось записать согласие в аудит")
@@ -79,8 +86,17 @@ async def try_handle(_bot, message, _state, text, uid) -> bool:
         return True
 
     if text == PURGE:
+        def _purge_everything() -> dict:
+            # Состояние диалога пишется фоновым потоком. Сначала убираем его из
+            # памяти и дожидаемся очереди — иначе отложенная запись прилетит
+            # уже ПОСЛЕ purge(), и строка в user_states воскреснет: человек
+            # просил всё забыть, а мы бы оставили след.
+            store.pop(uid, None)
+            store.flush()
+            return user_data.purge(uid)
+
         try:
-            removed = user_data.purge(uid)
+            removed = await asyncio.to_thread(_purge_everything)
         except Exception:
             log.exception("не удалось удалить данные по запросу из бота")
             await message.answer(
@@ -88,9 +104,10 @@ async def try_handle(_bot, message, _state, text, uid) -> bool:
                 keyboard=DECLINED_KB,
             )
             return True
-        audit.log(uid, "me.delete_all", f"id={uid}",
-                  ", ".join(f"{k}={v}" for k, v in removed.items())
-                  or "нечего было удалять")
+        await asyncio.to_thread(
+            audit.log, uid, "me.delete_all", f"id={uid}",
+            ", ".join(f"{k}={v}" for k, v in removed.items()) or "нечего было удалять",
+        )
         await message.answer(
             "Готово, я всё про тебя забыл.\n"
             "Если передумаешь — напиши что угодно, и начнём заново.",

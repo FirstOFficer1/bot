@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import calendar as _cal
 import datetime
 
@@ -29,7 +31,7 @@ def _format_status(delta: datetime.timedelta) -> str:
 async def try_handle(_bot, message, state, text, uid) -> bool:
     # ── Меню дедлайнов ───────────────────────────────────────────────────────
     if text == "📌 Дедлайны":
-        deadlines = model.list_for(uid)
+        deadlines = await asyncio.to_thread(model.list_for, uid)
         now = now_msk()
         dl_map: dict[str, int] = {}
         if deadlines:
@@ -74,7 +76,7 @@ async def try_handle(_bot, message, state, text, uid) -> bool:
             dl_map = state.get("dl_map", {})
             num = int(text)
             if str(num) in dl_map:
-                model.delete(dl_map[str(num)], uid)
+                await asyncio.to_thread(model.delete, dl_map[str(num)], uid)
                 store.pop(uid, None)
                 await message.answer(f"✅ Дедлайн [{num}] удалён.", keyboard=MAIN_KB)
             else:
@@ -201,7 +203,9 @@ async def try_handle(_bot, message, state, text, uid) -> bool:
                 keyboard=build(["⏩ Пропустить"], ["❌ Отмена"]),
             )
             return True
-        model.add(uid, state["dl_subject"], state.get("dl_desc", ""), deadline_at)
+        await asyncio.to_thread(
+            model.add, uid, state["dl_subject"], state.get("dl_desc", ""), deadline_at
+        )
         store.pop(uid, None)
         desc_line = f"\n📝 {state['dl_desc']}" if state.get("dl_desc") else ""
         await message.answer(

@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import os
 import re
 
@@ -44,11 +46,11 @@ async def try_handle(_bot, message, _state, text, uid) -> bool:
         return False
 
     panel_url = os.getenv("PANEL_BASE_URL", "").rstrip("/") or "https://elschedule.ru"
-    code, ttl = panel_codes.issue(uid)
+    code, ttl = await asyncio.to_thread(panel_codes.issue, uid)
     # Права бывают двух видов: из env (владельцы) и выданные в панели
     # (panel_users). Раньше учитывались только первые, и админ, которому выдали
     # доступ через панель, читал в боте, что он обычный пользователь.
-    is_admin = uid in _admin_ids() or _is_panel_admin(uid)
+    is_admin = uid in _admin_ids() or await asyncio.to_thread(_is_panel_admin, uid)
     role = "администратор" if is_admin else "обычный пользователь"
 
     # 1) Информационное сообщение
@@ -78,7 +80,7 @@ async def try_code_hint(_bot, message, _state, text, uid) -> bool:
     """Пользователь прислал код входа в чат вместо сайта."""
     if not _SIX_DIGITS_RE.match((text or "").strip()):
         return False
-    if not panel_codes.has_recent_code(uid):
+    if not await asyncio.to_thread(panel_codes.has_recent_code, uid):
         return False
 
     panel_url = os.getenv("PANEL_BASE_URL", "").rstrip("/") or "https://elschedule.ru"

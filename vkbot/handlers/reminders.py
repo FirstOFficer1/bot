@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import datetime
 
 from ..config import MAX_INPUT_LEN, now_msk
@@ -17,7 +19,7 @@ def _menu_kb() -> str:
 async def try_handle(_bot, message, state, text, uid) -> bool:
     # ── Меню напоминаний ─────────────────────────────────────────────────────
     if text == "⏰ Напоминание":
-        rems = model.list_for(uid)
+        rems = await asyncio.to_thread(model.list_for, uid)
         rem_map: dict[str, int] = {}
         if rems:
             ans = "⏰ Твои активные напоминания:\n\n"
@@ -50,7 +52,7 @@ async def try_handle(_bot, message, state, text, uid) -> bool:
             rem_map = state.get("rem_map", {})
             num = int(text)
             if str(num) in rem_map:
-                model.delete(rem_map[str(num)], uid)
+                await asyncio.to_thread(model.delete, rem_map[str(num)], uid)
                 store.pop(uid, None)
                 await message.answer(
                     f"✅ Напоминание [{num}] отменено.", keyboard=MAIN_KB
@@ -154,7 +156,7 @@ async def try_handle(_bot, message, state, text, uid) -> bool:
             )
             return True
         rem_text = state["reminder_text"]
-        model.add(uid, rem_text, remind_at)
+        await asyncio.to_thread(model.add, uid, rem_text, remind_at)
         store.pop(uid, None)
         await message.answer(
             f"✅ Напоминание создано!\n📝 {rem_text}\n📅 {remind_at}",

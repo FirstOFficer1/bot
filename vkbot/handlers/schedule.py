@@ -110,7 +110,7 @@ async def try_handle(_bot, message, state, text, uid) -> bool:
             return True
         wt = current_week_type()
         hint = "чётная" if wt == "чёт" else "нечётная"
-        pref = user_prefs.get(uid)
+        pref = await asyncio.to_thread(user_prefs.get, uid)
         if pref:
             pref_course, pref_dir = pref
             store[uid] = {
@@ -170,7 +170,7 @@ async def try_handle(_bot, message, state, text, uid) -> bool:
             await message.answer("Выбери направление:", keyboard=_direction_kb(course))
             return True
         if text == "📖 Вся неделя":
-            user_prefs.set(uid, course, direction)
+            await asyncio.to_thread(user_prefs.set, uid, course, direction)
             store.pop(uid, None)
             await _send_week(message, course, direction, week_type, MAIN_KB)
             return True
@@ -180,9 +180,9 @@ async def try_handle(_bot, message, state, text, uid) -> bool:
             if day == "Воскресенье":
                 await message.answer(f"{text} — воскресенье, выходной 🎉", keyboard=DAY_KB)
                 return True
-            sched = repo.get_day(course, direction, day, wt)
+            sched = await asyncio.to_thread(repo.get_day, course, direction, day, wt)
             wlabel = "чётная" if wt == "чёт" else "нечётная"
-            user_prefs.set(uid, course, direction)
+            await asyncio.to_thread(user_prefs.set, uid, course, direction)
             store.pop(uid, None)
             await message.answer(
                 f"📅 {text} — {day} ({wlabel} неделя)\n"
@@ -192,9 +192,9 @@ async def try_handle(_bot, message, state, text, uid) -> bool:
             )
             return True
         if text in DAYS:
-            sched = repo.get_day(course, direction, text, week_type)
+            sched = await asyncio.to_thread(repo.get_day, course, direction, text, week_type)
             wlabel = "чётная" if week_type == "чёт" else "нечётная"
-            user_prefs.set(uid, course, direction)
+            await asyncio.to_thread(user_prefs.set, uid, course, direction)
             store.pop(uid, None)
             await message.answer(
                 f"📅 {text} ({wlabel} неделя)\n"
@@ -236,7 +236,7 @@ async def try_handle(_bot, message, state, text, uid) -> bool:
             if day == "Воскресенье":
                 await message.answer(f"{text} — воскресенье, выходной 🎉", keyboard=_quick_day_kb())
                 return True
-            sched = repo.get_day(course, direction, day, wt)
+            sched = await asyncio.to_thread(repo.get_day, course, direction, day, wt)
             wlabel = "чётная" if wt == "чёт" else "нечётная"
             store.pop(uid, None)
             await message.answer(
@@ -247,7 +247,7 @@ async def try_handle(_bot, message, state, text, uid) -> bool:
             )
             return True
         if text in DAYS:
-            sched = repo.get_day(course, direction, text, week_type)
+            sched = await asyncio.to_thread(repo.get_day, course, direction, text, week_type)
             wlabel = "чётная" if week_type == "чёт" else "нечётная"
             store.pop(uid, None)
             await message.answer(
@@ -268,7 +268,7 @@ async def try_handle(_bot, message, state, text, uid) -> bool:
     if isinstance(state, dict) and state.get("step") == "view_course":
         week_type = state["week_type"]
         if text == "◀ Назад":
-            pref = user_prefs.get(uid)
+            pref = await asyncio.to_thread(user_prefs.get, uid)
             if pref:
                 pref_course, pref_dir = pref
                 store[uid] = {
@@ -328,19 +328,21 @@ async def try_handle(_bot, message, state, text, uid) -> bool:
                 await message.answer(f"{text} — воскресенье, выходной 🎉", keyboard=_view_day_kb())
                 return True
             wlabel = "чётная" if wt == "чёт" else "нечётная"
+            sched = await asyncio.to_thread(repo.get_day, course, direction, day, wt)
             await message.answer(
                 f"👀 {text} — {day} ({wlabel} неделя)\n"
                 f"{course} курс · {direction}\n\n"
-                f"{repo.get_day(course, direction, day, wt)}",
+                f"{sched}",
                 keyboard=_view_day_kb(),
             )
             return True
         if text in DAYS:
             wlabel = "чётная" if week_type == "чёт" else "нечётная"
+            sched = await asyncio.to_thread(repo.get_day, course, direction, text, week_type)
             await message.answer(
                 f"👀 {text} ({wlabel} неделя)\n"
                 f"{course} курс · {direction}\n\n"
-                f"{repo.get_day(course, direction, text, week_type)}",
+                f"{sched}",
                 keyboard=_view_day_kb(),
             )
             return True
