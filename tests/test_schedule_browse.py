@@ -14,7 +14,7 @@ import json
 
 import pytest
 
-from vkbot import config, db
+from vkbot import config, db, keyboards
 from vkbot.handlers import schedule as sched_handler
 from vkbot.handlers import subscriptions as subs_handler
 from vkbot.models import subscriptions as subs_model
@@ -164,6 +164,14 @@ def test_long_week_is_split_under_the_message_limit(monkeypatch):
 
 
 # ── Отписка кнопкой ──────────────────────────────────────────────────────────
+
+def test_main_menu_links_straight_to_subscriptions():
+    """Отписка жила за двумя экранами — из главного меню туда должен быть один тап."""
+    kb = json.loads(keyboards.MAIN_KB)
+    labels = [b["action"]["label"] for row in kb["buttons"] for b in row]
+
+    assert "🔔 Подписки на пары" in labels
+
 
 def test_subscriptions_menu_has_a_button_per_subscription():
     subs_model.add(UID, *COURSE_1)
