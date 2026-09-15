@@ -66,9 +66,17 @@ async def _feed(handler, text: str) -> FakeMessage:
     return m
 
 
-def _label(course: int) -> str:
-    """Подпись кнопки направления — её же присылает VK при нажатии."""
-    return next(iter(repo.label_to_full(course)))
+def _label(course: int, full: str) -> str:
+    """Подпись кнопки для конкретного направления — её же присылает VK.
+
+    Именно для конкретного, а не «первое попавшееся»: в общей тестовой базе
+    расписания к этому моменту лежит ещё и демо-расписание, залитое панельными
+    тестами, и первым в списке направлений оказывается оно.
+    """
+    for label, direction in repo.label_to_full(course).items():
+        if direction == full:
+            return label
+    raise AssertionError(f"направление не найдено: {course} курс, {full}")
 
 
 # ── Просмотр чужого расписания ───────────────────────────────────────────────
@@ -80,7 +88,7 @@ async def test_browsing_other_group_keeps_saved_choice():
     await _feed(sched_handler.try_handle, "📅 Расписание")
     await _feed(sched_handler.try_handle, "👀 Другое расписание")
     await _feed(sched_handler.try_handle, "2")
-    await _feed(sched_handler.try_handle, _label(2))
+    await _feed(sched_handler.try_handle, _label(2, COURSE_2[1]))
     m = await _feed(sched_handler.try_handle, "Вторник")
 
     assert "Юриспруденция" in m.answers[-1], "показали не то расписание"
@@ -95,7 +103,7 @@ async def test_browsing_lets_you_look_at_another_day():
     await _feed(sched_handler.try_handle, "📅 Расписание")
     await _feed(sched_handler.try_handle, "👀 Другое расписание")
     await _feed(sched_handler.try_handle, "2")
-    await _feed(sched_handler.try_handle, _label(2))
+    await _feed(sched_handler.try_handle, _label(2, COURSE_2[1]))
     await _feed(sched_handler.try_handle, "Вторник")
     m = await _feed(sched_handler.try_handle, "Среда")
 
@@ -111,7 +119,7 @@ async def test_switching_group_still_updates_choice():
     await _feed(sched_handler.try_handle, "📅 Расписание")
     await _feed(sched_handler.try_handle, "🔄 Сменить курс/направление")
     await _feed(sched_handler.try_handle, "2")
-    await _feed(sched_handler.try_handle, _label(2))
+    await _feed(sched_handler.try_handle, _label(2, COURSE_2[1]))
     await _feed(sched_handler.try_handle, "Вторник")
 
     assert tuple(user_prefs.get(UID)) == COURSE_2
@@ -138,7 +146,7 @@ async def test_week_view_in_browse_mode_keeps_saved_choice():
     await _feed(sched_handler.try_handle, "📅 Расписание")
     await _feed(sched_handler.try_handle, "👀 Другое расписание")
     await _feed(sched_handler.try_handle, "2")
-    await _feed(sched_handler.try_handle, _label(2))
+    await _feed(sched_handler.try_handle, _label(2, COURSE_2[1]))
     m = await _feed(sched_handler.try_handle, "📖 Вся неделя")
 
     assert "Юриспруденция" in "\n".join(m.answers)
