@@ -1697,6 +1697,24 @@ _BASE_TPL = """
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+// Подтверждения вешаются через data-confirm, а не через onsubmit="confirm('…')".
+// Причина: в inline-обработчике HTML-экранирования недостаточно — браузер
+// декодирует сущности ДО того, как значение компилируется как JS, поэтому
+// экранированная кавычка снова становится кавычкой и разрывает строку. Имена
+// направлений приходят из загруженного Excel, имена людей — из VK; ни то, ни
+// другое доверять нельзя. getAttribute отдаёт текст, который никогда не
+// разбирается ни как HTML, ни как JS.
+document.addEventListener('submit', function (e) {
+  var form = e.target;
+  if (!form || !form.getAttribute) return;
+  var msg = form.getAttribute('data-confirm');
+  if (msg && !window.confirm(msg)) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+}, true);
+</script>
 </body>
 </html>
 """
@@ -2020,7 +2038,7 @@ _DASHBOARD_CONTENT = """
   </button>
   {% if pref %}
     <form method="post" action="{{ url_for('me_unsubscribe') }}" style="margin:0;"
-          onsubmit="return confirm('Отключить напоминания и снова видеть пары всех курсов? Вернуть выбор можно в любой момент.');">
+          data-confirm="Отключить напоминания и снова видеть пары всех курсов? Вернуть выбор можно в любой момент.">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button class="btn btn-outline-secondary btn-sm" style="color:#DC2626;border-color:color-mix(in srgb,#DC2626 30%, var(--border));">✕ Отключить</button>
     </form>
@@ -2065,9 +2083,23 @@ _DASHBOARD_CONTENT = """
     courseSel.addEventListener('change', function() {
       const c = parseInt(this.value);
       const dirs = dirsByCourse[c] || [];
-      dirSel.innerHTML = dirs.length
-        ? '<option value="">— выбери направление —</option>' + dirs.map(d => `<option value="${d.replace(/"/g,'&quot;')}">${d}</option>`).join('')
-        : '<option value="">— нет данных для этого курса —</option>';
+      // Через DOM, а не innerHTML: названия направлений приходят из
+      // загруженного Excel, и `<img src=x onerror=...>` в ячейке исполнялся бы
+      // у каждого, кто открыл дашборд и переключил курс. textContent и value
+      // содержимое как разметку не разбирают.
+      dirSel.textContent = '';
+      var head = document.createElement('option');
+      head.value = '';
+      head.textContent = dirs.length
+        ? '— выбери направление —'
+        : '— нет данных для этого курса —';
+      dirSel.appendChild(head);
+      dirs.forEach(function (d) {
+        var opt = document.createElement('option');
+        opt.value = d;
+        opt.textContent = d;
+        dirSel.appendChild(opt);
+      });
     });
   }
 })();
@@ -2476,7 +2508,7 @@ _UPLOAD_CONTENT = """
                class="btn btn-sm btn-outline-secondary" title="Скачать">⬇</a>
             {% if not loop.first %}
             <form method="post" action="{{ url_for('upload_rollback', version_id=v.id) }}"
-                  onsubmit="return confirm('Откатить расписание к версии #{{ v.id }}?')">
+                  data-confirm="Откатить расписание к версии #{{ v.id }}?">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               <button class="btn btn-sm btn-outline-warning">↩ Откат</button>
             </form>
@@ -2777,7 +2809,7 @@ _SCHEDULE_CONTENT = """
 _ME_CONTENT = """
 {% macro del_btn(kind, id, label='Удалить') %}
   <form method="post" action="{{ url_for('me_delete') }}" class="d-inline"
-        onsubmit="return confirm('{{ label }}?');">
+        data-confirm="{{ label }}?">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <input type="hidden" name="kind" value="{{ kind }}">
     <input type="hidden" name="id" value="{{ id }}">
@@ -2935,7 +2967,7 @@ _ME_CONTENT = """
                   <strong>{{ row[1] }} курс</strong> · {{ row[2] }}
                 </span>
                 <form method="post" action="{{ url_for('me_delete') }}" class="m-0"
-                      onsubmit="return confirm('Отписаться от {{ row[1] }} курс — {{ row[2] }}?');">
+                      data-confirm="Отписаться от {{ row[1] }} курс — {{ row[2] }}?">
                   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                   <input type="hidden" name="kind" value="subscription">
                   <input type="hidden" name="id" value="{{ row[0] }}">
@@ -3005,7 +3037,7 @@ _ME_CONTENT = """
           </p>
         {% endif %}
         <form method="post" action="{{ url_for('me_delete_all') }}" class="mt-2"
-              onsubmit="return confirm('Удалить все данные без возможности восстановить?');">
+              data-confirm="Удалить все данные без возможности восстановить?">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:10px;">
             <input type="checkbox" name="confirm" value="yes" required>
@@ -4561,7 +4593,7 @@ _USERS_CONTENT = """
             <td class="text-end" style="white-space:nowrap;">
               {% if u.role == 'user' %}
                 <form method="post" action="{{ url_for('admin_grant') }}" class="d-inline"
-                      onsubmit="return confirm('Дать админа {{ u.name }} (id{{ u.vk_id }})?');">
+                      data-confirm="Дать админа {{ u.name }} (id{{ u.vk_id }})?">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                   <input type="hidden" name="vk_id" value="{{ u.vk_id }}">
                   <input type="hidden" name="name" value="{{ u.name }}">
@@ -4570,7 +4602,7 @@ _USERS_CONTENT = """
                 </form>
               {% elif u.role == 'admin' %}
                 <form method="post" action="{{ url_for('admin_revoke') }}" class="d-inline"
-                      onsubmit="return confirm('Убрать админа у {{ u.name }}?');">
+                      data-confirm="Убрать админа у {{ u.name }}?">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                   <input type="hidden" name="vk_id" value="{{ u.vk_id }}">
                   <input type="hidden" name="next" value="{{ self_url }}">
@@ -4732,7 +4764,7 @@ _ADMINS_CONTENT = """
             <td class="d-none d-md-table-cell text-muted small">{{ a.added_at }}</td>
             <td class="text-end">
               <form method="post" action="{{ url_for('admin_revoke') }}" class="d-inline"
-                    onsubmit="return confirm('Убрать админа у {{ a.name or a.vk_id }}?');">
+                    data-confirm="Убрать админа у {{ a.name or a.vk_id }}?">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <input type="hidden" name="vk_id" value="{{ a.vk_id }}">
                 <button class="btn btn-sm btn-outline-warning">✖ Убрать</button>
@@ -5786,7 +5818,7 @@ _BROADCAST_CONTENT = """
 
 <form method="post" action="{{ url_for('broadcast_send') }}" class="card mb-4"
       style="padding:18px;display:flex;flex-direction:column;gap:14px;"
-      onsubmit="return confirm('Отправить сообщение {{ subscriber_count }} подписчикам?');">
+      data-confirm="Отправить сообщение {{ subscriber_count }} подписчикам?">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   <div>
     <label class="form-label">Текст сообщения</label>

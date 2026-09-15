@@ -6,9 +6,16 @@ from ..db import connect
 
 
 def add(uid: int, course: int, direction: str) -> None:
+    """Добавляет подписку. Повтор молча игнорируется.
+
+    OR IGNORE, а не голый INSERT: уникальный индекс по (user_id, course,
+    LOWER(direction)) — единственная настоящая защита от дублей. Проверка
+    exists() в хендлере выполняется отдельным шагом, и между ней и вставкой
+    бот успевает обработать второе сообщение того же человека.
+    """
     with connect() as conn:
         conn.execute(
-            "INSERT INTO subscriptions (user_id, course, direction) VALUES (?,?,?)",
+            "INSERT OR IGNORE INTO subscriptions (user_id, course, direction) VALUES (?,?,?)",
             (uid, course, direction),
         )
 

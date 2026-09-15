@@ -143,6 +143,26 @@ def init() -> None:
             );
 
             CREATE INDEX IF NOT EXISTS idx_subs_user ON subscriptions(user_id);
+            -- Дедупликация перед уникальным индексом: дубли могли накопиться,
+            -- пока защиты не было. Оставляем активную строку, а не просто
+            -- первую по id — иначе отключённая подписка пережила бы рабочую.
+            DELETE FROM subscriptions WHERE id NOT IN (
+                SELECT id FROM (
+                    SELECT id, ROW_NUMBER() OVER (
+                        PARTITION BY user_id, course, LOWER(direction)
+                        ORDER BY COALESCE(disabled, 0) ASC, id ASC
+                    ) AS rn
+                    FROM subscriptions
+                )
+                WHERE rn = 1
+            );
+            -- Проверка «уже подписан?» и вставка идут двумя отдельными шагами,
+            -- между которыми хендлер отдаёт управление: два одновременных
+            -- сообщения одного человека проходили проверку оба. Гарантию даёт
+            -- база, а не порядок вызовов. LOWER — потому что exists() сравнивает
+            -- направление без учёта регистра.
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_subs_unique
+                ON subscriptions(user_id, course, LOWER(direction));
             CREATE INDEX IF NOT EXISTS idx_reminders_pending ON reminders(notified, remind_at);
             CREATE INDEX IF NOT EXISTS idx_deadlines_at ON deadlines(deadline_at);
             CREATE INDEX IF NOT EXISTS idx_sent_notifs_lookup
