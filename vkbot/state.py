@@ -22,6 +22,7 @@ import json
 import logging
 import queue
 import threading
+import time
 from typing import Any
 
 from .db import connect
@@ -32,6 +33,11 @@ _DELETE = "delete"
 
 class StateStore:
     """In-memory кэш + отложенная persistence в SQLite таблице user_states."""
+
+    #: сколько ждать разбора очереди в flush(); дальше запись догоняет сама
+    _flush_timeout = 5.0
+    #: повторов записи, прежде чем сдаться и записать в лог
+    _write_attempts = 3
 
     def __init__(self) -> None:
         self._data: dict[int, Any] = {}
@@ -54,13 +60,33 @@ class StateStore:
         while True:
             kind, uid, payload = self._queue.get()
             try:
-                self._apply(kind, uid, payload)
-            except Exception:
-                # Поток обязан пережить сбойную запись: иначе одна занятая база
-                # молча похоронила бы persistence до перезапуска сервиса.
-                logging.exception("Не удалось сохранить состояние uid=%s", uid)
+                self._apply_with_retries(kind, uid, payload)
             finally:
+                # Поток обязан пережить сбойную запись: иначе одна занятая база
+                # молча похоронила бы persistence до перезапуска сервиса. И
+                # task_done() обязателен в любом случае, иначе flush() ждал бы
+                # операцию, которой уже никто не занимается.
                 self._queue.task_done()
+
+    def _apply_with_retries(self, kind: str, uid: int, payload: str | None) -> None:
+        """Пробует записать несколько раз: «database is locked» обычно проходит.
+
+        Исключение наружу не уходит — вызывающий давно вернулся. Если не вышло
+        и с повторами, в памяти остаётся верное состояние, а в базе — старое;
+        это видно в логах и переживается: после перезапуска диалог откатится
+        на шаг, а не сломается.
+        """
+        for attempt in range(1, self._write_attempts + 1):
+            try:
+                self._apply(kind, uid, payload)
+                return
+            except Exception:
+                if attempt == self._write_attempts:
+                    logging.exception(
+                        "Состояние uid=%s не сохранено за %s попыток", uid, attempt
+                    )
+                    return
+                time.sleep(0.05 * attempt)
 
     def _apply(self, kind: str, uid: int, payload: str | None) -> None:
         with connect() as conn:
@@ -83,7 +109,10 @@ class StateStore:
         своих данных (152-ФЗ) и тесты, которые иначе ловили бы чужие записи,
         прилетевшие после очистки таблиц.
         """
-        if self._queue.empty():
+        # unfinished_tasks, а не empty(): get() забирает операцию из очереди до
+        # того, как она записана, поэтому пустая очередь ещё не значит, что
+        # писатель закончил. Счётчик уменьшается только на task_done().
+        if self._queue.unfinished_tasks == 0:
             return
         try:
             self._ensure_writer()
@@ -93,7 +122,18 @@ class StateStore:
             # записи хуже — человек увидел бы диалог откатившимся на шаг назад.
             self._drain_remaining()
             return
-        self._queue.join()
+        # queue.join() не умеет тайм-аут, а ждать бесконечно нельзя: очередь
+        # общая, и застрявший на заблокированной базе писатель подвесил бы
+        # вызывающего навсегда. Лучше вернуться и оставить запись догоняющей.
+        deadline = time.monotonic() + self._flush_timeout
+        while self._queue.unfinished_tasks:
+            if time.monotonic() >= deadline:
+                logging.warning(
+                    "Очередь состояний не разобрана за %s с — записи догонят позже",
+                    self._flush_timeout,
+                )
+                return
+            time.sleep(0.005)
 
     def _drain_remaining(self) -> None:
         while True:

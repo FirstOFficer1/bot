@@ -93,7 +93,13 @@ async def try_handle(_bot, message, _state, text, uid) -> bool:
             # просил всё забыть, а мы бы оставили след.
             store.pop(uid, None)
             store.flush()
-            return user_data.purge(uid)
+            removed = user_data.purge(uid)
+            # И ещё раз: пока шло удаление, бот мог принять от этого же человека
+            # следующее сообщение и завести состояние заново. Окно узкое, но
+            # молча оставить после «забудь меня» чужую строку нельзя.
+            store.pop(uid, None)
+            store.flush()
+            return removed
 
         try:
             removed = await asyncio.to_thread(_purge_everything)

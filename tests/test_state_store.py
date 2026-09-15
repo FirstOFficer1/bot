@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 
 import pytest
 
@@ -80,6 +81,59 @@ def test_operations_keep_their_order():
 def test_flush_on_empty_queue_is_a_noop():
     store.flush()
     store.flush()
+
+
+def test_flush_waits_for_a_write_already_in_progress():
+    """get() опустошает очередь до записи — flush() не должен на это купиться."""
+    fresh = StateStore()
+    started = threading.Event()
+    original_apply = fresh._apply
+
+    def slow_apply(kind, uid, payload):
+        started.set()
+        time.sleep(0.2)
+        return original_apply(kind, uid, payload)
+
+    fresh._apply = slow_apply
+    fresh[UID] = {"step": "day"}
+    started.wait(2)  # запись уже вынута из очереди и выполняется
+
+    fresh.flush()
+
+    assert _row(UID) is not None, "flush() вернулся, пока запись ещё шла"
+
+
+def test_flush_gives_up_instead_of_hanging(monkeypatch):
+    """Застрявший писатель не должен подвешивать вызывающего навсегда."""
+    fresh = StateStore()
+    monkeypatch.setattr(type(fresh), "_flush_timeout", 0.2)
+    monkeypatch.setattr(fresh, "_apply", lambda *_a: time.sleep(5))
+
+    fresh[UID] = {"step": "day"}
+    began = time.monotonic()
+    fresh.flush()
+
+    assert time.monotonic() - began < 2, "flush() завис вместо того, чтобы сдаться"
+
+
+def test_failed_write_does_not_kill_the_writer():
+    """Одна сбойная запись не должна хоронить persistence до перезапуска."""
+    fresh = StateStore()
+    monkeypatch_calls: list[int] = []
+    original_apply = fresh._apply
+
+    def flaky(kind, uid, payload):
+        monkeypatch_calls.append(1)
+        if len(monkeypatch_calls) == 1:
+            raise RuntimeError("database is locked")
+        return original_apply(kind, uid, payload)
+
+    fresh._apply = flaky
+    fresh[UID] = {"step": "day"}
+    fresh.flush()
+
+    assert len(monkeypatch_calls) >= 2, "повтора не было"
+    assert _row(UID) is not None, "запись потерялась после повтора"
 
 
 # ── Не держим event loop ─────────────────────────────────────────────────────

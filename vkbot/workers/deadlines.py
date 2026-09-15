@@ -50,7 +50,7 @@ async def run(bot) -> None:
             cutoff = (now - datetime.timedelta(days=config.DEADLINE_CLEANUP_DAYS)).strftime(
                 "%Y-%m-%d %H:%M"
             )
-            model.cleanup_older_than(cutoff)
+            await asyncio.to_thread(model.cleanup_older_than, cutoff)
 
             monotonic = time.monotonic()
             if (
