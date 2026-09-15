@@ -31,11 +31,12 @@ _TEMPLATES = {
 # Граница слева обязательна: без неё `on\w+=` радостно находит `on` внутри
 # `data-confirm=` и `content=`. На это тест уже попадался.
 _INLINE_HANDLER_RE = re.compile(r"(?<![\w-])(on\w+)\s*=\s*\"([^\"]*)\"")
-_JS_LINE_COMMENT_RE = re.compile(r"//[^\n]*")
+# (?<!:) — чтобы не съесть «https://…» вместе с остатком строки.
+_JS_LINE_COMMENT_RE = re.compile(r"(?<!:)//[^\n]*")
 
 
 def _without_js_comments(text: str) -> str:
-    """Комментарии сами упоминают опасные приёмы — их считать не надо."""
+    """Комментарии сами объясняют опасные приёмы — считать их не надо."""
     return _JS_LINE_COMMENT_RE.sub("", text)
 
 
@@ -49,7 +50,7 @@ def test_no_inline_confirm_handlers():
     offenders = [
         f"{name}: {m.group(0)[:70]}"
         for name, tpl in _TEMPLATES.items()
-        for m in _INLINE_HANDLER_RE.finditer(tpl)
+        for m in _INLINE_HANDLER_RE.finditer(_without_js_comments(tpl))
         if "confirm(" in m.group(2)
     ]
 
@@ -64,7 +65,7 @@ def test_no_template_variables_inside_inline_handlers():
     offenders = [
         f"{name}: {m.group(0)[:70]}"
         for name, tpl in _TEMPLATES.items()
-        for m in _INLINE_HANDLER_RE.finditer(tpl)
+        for m in _INLINE_HANDLER_RE.finditer(_without_js_comments(tpl))
         if "{{" in m.group(2)
     ]
 
