@@ -1,7 +1,7 @@
 """Данные из внешних источников не попадают в места, где они исполняются.
 
 Два таких места уже находили в бою. Имя выбранного файла подставлялось в
-`innerHTML` — в Linux/macOS файл можно назвать `<img src=x onerror=...>.xlsx`.
+`innerHTML` — в Linux/macOS файл можно назвать так, что имя станет разметкой.
 Названия направлений (они приходят из загруженного Excel) тоже уходили в
 `innerHTML` и срабатывали у каждого, кто открыл дашборд и переключил курс.
 
@@ -28,6 +28,16 @@ _TEMPLATES = {
     if name.isupper() and isinstance(value, str) and "<" in value and len(value) > 200
 }
 
+# Граница слева обязательна: без неё `on\w+=` радостно находит `on` внутри
+# `data-confirm=` и `content=`. На это тест уже попадался.
+_INLINE_HANDLER_RE = re.compile(r"(?<![\w-])(on\w+)\s*=\s*\"([^\"]*)\"")
+_JS_LINE_COMMENT_RE = re.compile(r"//[^\n]*")
+
+
+def _without_js_comments(text: str) -> str:
+    """Комментарии сами упоминают опасные приёмы — их считать не надо."""
+    return _JS_LINE_COMMENT_RE.sub("", text)
+
 
 def test_templates_were_found():
     """Если шаблоны переименуют, тест обязан упасть, а не молча опустеть."""
@@ -37,27 +47,30 @@ def test_templates_were_found():
 def test_no_inline_confirm_handlers():
     """Подтверждения — только через data-confirm."""
     offenders = [
-        name for name, tpl in _TEMPLATES.items()
-        if re.search(r"on\w+\s*=\s*\"[^\"]*confirm\(", tpl)
+        f"{name}: {m.group(0)[:70]}"
+        for name, tpl in _TEMPLATES.items()
+        for m in _INLINE_HANDLER_RE.finditer(tpl)
+        if "confirm(" in m.group(2)
     ]
 
     assert not offenders, (
-        f"inline confirm() вернулся в {offenders}: в on*-обработчике "
-        "HTML-экранирования недостаточно, используй data-confirm"
+        "inline confirm() вернулся — в on*-обработчике HTML-экранирования "
+        "недостаточно, используй data-confirm:\n" + "\n".join(offenders)
     )
 
 
 def test_no_template_variables_inside_inline_handlers():
-    """В on*-обработчик не должно подставляться вообще ничего из шаблона."""
-    offenders: list[str] = []
-    for name, tpl in _TEMPLATES.items():
-        for match in re.finditer(r"on\w+\s*=\s*\"([^\"]*)\"", tpl):
-            if "{{" in match.group(1):
-                offenders.append(f"{name}: {match.group(0)[:70]}")
+    """В on*-обработчик не должно подставляться ничего из шаблона."""
+    offenders = [
+        f"{name}: {m.group(0)[:70]}"
+        for name, tpl in _TEMPLATES.items()
+        for m in _INLINE_HANDLER_RE.finditer(tpl)
+        if "{{" in m.group(2)
+    ]
 
     assert not offenders, (
-        "шаблонная переменная внутри inline-обработчика — "
-        f"браузер раскодирует сущности до разбора JS:\n" + "\n".join(offenders)
+        "шаблонная переменная внутри inline-обработчика — браузер раскодирует "
+        "сущности до разбора JS:\n" + "\n".join(offenders)
     )
 
 
@@ -65,22 +78,30 @@ def test_innerhtml_is_not_fed_with_data():
     """innerHTML допустим только с константой, но не со значением из данных."""
     offenders: list[str] = []
     for name, tpl in _TEMPLATES.items():
-        for match in re.finditer(r"innerHTML\s*=\s*([^;\n]+)", tpl):
-            expression = match.group(1)
-            # Константа в кавычках без склейки — безопасно.
-            if re.fullmatch(r"\s*'[^']*'\s*|\s*\"[^\"]*\"\s*", expression):
-                continue
-            offenders.append(f"{name}: innerHTML = {expression.strip()[:70]}")
+        for match in re.finditer(r"innerHTML\s*=\s*([^;\n]+)", _without_js_comments(tpl)):
+            expression = match.group(1).strip()
+            if re.fullmatch(r"'[^']*'|\"[^\"]*\"", expression):
+                continue  # константа в кавычках без склейки
+            offenders.append(f"{name}: innerHTML = {expression[:70]}")
 
     assert not offenders, (
         "в innerHTML попадает не константа — собирай узлы через "
-        f"createElement/textContent:\n" + "\n".join(offenders)
+        "createElement/textContent:\n" + "\n".join(offenders)
     )
 
 
-def test_upload_page_shows_filename_through_text_content():
-    """Точечно закрепляем уже исправленное место: имя файла — через textContent."""
-    upload = web_panel._UPLOAD_CONTENT
+def test_upload_page_builds_the_filename_through_the_dom():
+    """Точечно закрепляем уже исправленное место: имя файла — не разметка."""
+    body = _without_js_comments(web_panel._UPLOAD_CONTENT)
+    set_name = body.split("function setName")[1][:500]
 
-    assert "textContent = name" in upload.replace("badge.textContent = name", "textContent = name")
-    assert "innerHTML" not in upload.split("function setName")[1][:400]
+    assert "textContent = name" in set_name, "имя файла перестало идти через textContent"
+    assert "innerHTML" not in set_name, "innerHTML вернулся в показ имени файла"
+
+
+def test_direction_selector_builds_options_through_the_dom():
+    """Названия направлений приходят из Excel — только createElement."""
+    dashboard = _without_js_comments(web_panel._DASHBOARD_CONTENT)
+
+    assert "createElement('option')" in dashboard
+    assert "innerHTML" not in dashboard, "селектор направлений снова собирается строкой"

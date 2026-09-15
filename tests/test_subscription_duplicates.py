@@ -34,13 +34,29 @@ def test_adding_twice_leaves_one_row():
     assert _count() == 1
 
 
-def test_case_differences_do_not_create_a_second_row():
-    """exists() сравнивает без учёта регистра — индекс обязан делать так же."""
-    model.add(UID, COURSE, DIRECTION)
-    model.add(UID, COURSE, DIRECTION.upper())
-    model.add(UID, COURSE, DIRECTION.lower())
+def test_ascii_case_differences_do_not_create_a_second_row():
+    """Там, где SQLite умеет регистр, индекс ведёт себя как exists()."""
+    model.add(UID, COURSE, "Applied Informatics")
+    model.add(UID, COURSE, "APPLIED INFORMATICS")
+    model.add(UID, COURSE, "applied informatics")
 
     assert _count() == 1
+
+
+def test_cyrillic_case_differences_are_distinct_and_that_is_known():
+    """Фиксируем неприятную правду: LOWER() в SQLite кириллицу не трогает.
+
+    Значит для русских названий регистр различается и в индексе, и в exists() —
+    обе стороны ведут себя одинаково, поэтому дублей из гонки не будет, но
+    «Прикладная» и «ПРИКЛАДНАЯ» считаются разными подписками. На практике
+    названия приходят одной строкой из одного импорта. Тест стоит здесь, чтобы
+    ограничение не открыли заново в проде.
+    """
+    model.add(UID, COURSE, DIRECTION)
+    model.add(UID, COURSE, DIRECTION.upper())
+
+    assert _count() == 2
+    assert not model.exists(UID, COURSE, DIRECTION.upper() + "!")
 
 
 def test_concurrent_adds_leave_one_row():
