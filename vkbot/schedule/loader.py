@@ -15,6 +15,7 @@ import secrets
 import shutil
 import sqlite3
 import tempfile
+import threading
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
@@ -122,10 +123,30 @@ def _reserve_version_file(ts: str, safe_name: str) -> Path:
     raise RuntimeError("не удалось подобрать свободное имя для архива расписания")
 
 
-def commit(excel_path: str, uploaded_by: str, original_filename: str) -> dict:
-    """Атомарная замена расписания + бэкап + версия + hot-reload.
+# Применение расписания — пять шагов: бэкап, копия файла, импорт, запись версии,
+# сигнал reload. Панель работает в четыре потока, и два одновременных коммита
+# разных загрузок перезаписывали общий schedule_backup, лили разные файлы в одну
+# таблицу и записывали обе версии — после чего откат поднимал не то расписание,
+# которое указано в журнале. Уникальное имя архива эту часть не закрывало.
+#
+# Замок процессный, и этого достаточно: панель по построению однопроцессная
+# (см. CLAUDE.md — в памяти живут _PENDING_UPLOADS и прогресс рассылки), а бот
+# расписание не меняет, только перечитывает.
+_COMMIT_LOCK = threading.Lock()
 
-    Шаги:
+
+def commit(excel_path: str, uploaded_by: str, original_filename: str) -> dict:
+    """Замена расписания + бэкап + версия + hot-reload. Выполняется по одному.
+
+    Через неё же идут rollback() и quick_apply(), поэтому замок здесь один на
+    все пути изменения расписания.
+    """
+    with _COMMIT_LOCK:
+        return _commit_locked(excel_path, uploaded_by, original_filename)
+
+
+def _commit_locked(excel_path: str, uploaded_by: str, original_filename: str) -> dict:
+    """Шаги:
       1. Бэкапим текущую таблицу schedule → schedule_backup
       2. Сохраняем Excel в schedule_versions/<timestamp>_<name>
       3. Импортируем новый Excel в основную БД

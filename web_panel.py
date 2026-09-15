@@ -3511,15 +3511,35 @@ def logout_all():
     отметкой отзыва: саму куку оттуда не достать.
     """
     uid = _current_vk_id()
+    revoked = True
     if uid:
+        # Оба отзыва обязательны и оба security-критичны: токены лежат в БД, а
+        # Flask-сессии на чужих устройствах гасятся только отметкой. Если
+        # упадёт любой, часть устройств останется залогиненной — раньше это
+        # молча глоталось, и человек видел обычный успех, считая, что выгнал
+        # всех. Аудит же не причина объявлять операцию неудавшейся.
         try:
             panel_remember.revoke_all(uid)
             panel_sessions.revoke_all(uid)
-            audit.log(uid, "auth.logout_all", f"id{uid}", "")
         except Exception:
-            pass
+            logging.exception("logout_all: не удалось отозвать сессии uid=%s", uid)
+            revoked = False
+        try:
+            audit.log(
+                uid, "auth.logout_all", f"id{uid}",
+                "" if revoked else "отзыв не удался",
+            )
+        except Exception:
+            logging.exception("logout_all: не удалось записать аудит uid=%s", uid)
+
     session.clear()
-    resp = redirect(url_for("login"))
+    if revoked:
+        resp = redirect(url_for("login"))
+    else:
+        resp = redirect(url_for(
+            "login",
+            error="Это устройство вышло, но завершить сеансы на остальных не удалось. Повтори попытку.",
+        ))
     _clear_remember_cookie(resp)
     return resp
 
