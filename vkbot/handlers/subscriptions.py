@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from ..keyboards import MAIN_KB, build
 from ..models import subscriptions as model
 from ..models import user_prefs
@@ -9,8 +11,52 @@ from ..schedule import repo
 from ..state import store
 
 
-def _menu_kb() -> str:
-    return build(["➕ Добавить подписку"], ["◀ Назад"])
+def _menu_kb(subs: list[tuple]) -> str:
+    """Меню подписок: по кнопке на каждую подписку плюс «добавить».
+
+    Отписка раньше существовала только как ввод номера текстом — подсказку
+    в сообщении никто не читал, и функция считалась отсутствующей. Номер в
+    начале подписи не случаен: `build` режет подпись до 40 символов, и длинное
+    направление обрезается, а «❌ 2.» остаётся на месте и по нему же опознаётся
+    нажатие.
+    """
+    rows = [
+        [f"❌ {i}. {course} курс — {direction}"]
+        for i, (_sid, course, direction) in enumerate(subs, 1)
+    ]
+    rows.append(["➕ Добавить подписку"])
+    rows.append(["◀ Назад"])
+    return build(*rows)
+
+
+def _chosen_number(text: str) -> str | None:
+    """Номер подписки из нажатой кнопки «❌ 2. …» или из введённой цифры."""
+    m = re.match(r"^❌\s*(\d+)\.", text)
+    if m:
+        return m.group(1)
+    return text if text.isdecimal() else None
+
+
+def _subs_screen(uid: int) -> tuple[str, str, dict[str, int]]:
+    """Текст, клавиатура и карта номеров для экрана подписок."""
+    subs = model.list_for(uid)
+    sub_map = {str(i): sid for i, (sid, _c, _d) in enumerate(subs, 1)}
+    if subs:
+        lines = "\n".join(
+            f"[{i}] {course} курс — {direction}"
+            for i, (_sid, course, direction) in enumerate(subs, 1)
+        )
+        text = (
+            "🔔 Твои подписки на уведомления о парах:\n\n"
+            f"{lines}\n\n"
+            "Нажми ❌ на подписке, чтобы отписаться."
+        )
+    else:
+        text = (
+            "У тебя пока нет подписок.\n\n"
+            "Добавь подписку — и я буду напоминать о каждой паре за 10 минут."
+        )
+    return text, _menu_kb(subs), sub_map
 
 
 def _course_kb() -> str:
@@ -33,30 +79,19 @@ def _quick_kb(pref_course: int, pref_dir: str) -> str:
     )
 
 
-def _reset_to_menu(uid: int) -> None:
-    subs = model.list_for(uid)
-    sub_map = {str(i): sid for i, (sid, _, _) in enumerate(subs, 1)}
+def _reset_to_menu(uid: int) -> tuple[str, str]:
+    """Возвращает пользователя на экран подписок; отдаёт текст и клавиатуру."""
+    text, keyboard, sub_map = _subs_screen(uid)
     store[uid] = {"state": "subs", "sub_map": sub_map}
+    return text, keyboard
 
 
 async def try_handle(_bot, message, state, text, uid) -> bool:
     # ── Меню подписок ────────────────────────────────────────────────────────
     if text == "🔔 Подписки на пары":
-        subs = model.list_for(uid)
-        sub_map: dict[str, int] = {}
-        if subs:
-            ans = "🔔 Твои подписки на уведомления о парах:\n\n"
-            for i, (sid, course, direction) in enumerate(subs, 1):
-                sub_map[str(i)] = sid
-                ans += f"[{i}] {course} курс — {direction}\n"
-            ans += "\nВведи номер для удаления подписки, или добавь новую."
-        else:
-            ans = (
-                "У тебя пока нет подписок.\n\n"
-                "Добавь подписку — и я буду напоминать о каждой паре за 10 минут."
-            )
+        ans, keyboard, sub_map = _subs_screen(uid)
         store[uid] = {"state": "subs", "sub_map": sub_map}
-        await message.answer(ans, keyboard=_menu_kb())
+        await message.answer(ans, keyboard=keyboard)
         return True
 
     if isinstance(state, dict) and state.get("state") == "subs":
@@ -82,23 +117,26 @@ async def try_handle(_bot, message, state, text, uid) -> bool:
                 store[uid] = {"step": "sub_course"}
                 await message.answer("Выбери курс:", keyboard=_course_kb())
             return True
-        if text.isdecimal():
+        num = _chosen_number(text)
+        if num is not None:
             sub_map = state.get("sub_map", {})
-            num = int(text)
-            if str(num) in sub_map:
-                model.delete(sub_map[str(num)], uid)
-                store.pop(uid, None)
-                await message.answer(f"✅ Подписка [{num}] удалена.", keyboard=MAIN_KB)
+            if num in sub_map:
+                model.delete(sub_map[num], uid)
+                # Остаёмся на экране подписок: отписка редко бывает одиночной,
+                # да и подтверждение видно сразу над обновлённым списком.
+                ans, keyboard, new_map = _subs_screen(uid)
+                store[uid] = {"state": "subs", "sub_map": new_map}
+                await message.answer(f"✅ Отписка выполнена.\n\n{ans}", keyboard=keyboard)
             else:
+                ans, keyboard, new_map = _subs_screen(uid)
+                store[uid] = {"state": "subs", "sub_map": new_map}
                 await message.answer(
-                    "❌ Подписка с таким номером не найдена.",
-                    keyboard=_menu_kb(),
+                    f"❌ Подписка с таким номером не найдена.\n\n{ans}", keyboard=keyboard
                 )
             return True
-        await message.answer(
-            "Введи номер подписки для удаления или нажми кнопку.",
-            keyboard=_menu_kb(),
-        )
+        ans, keyboard, sub_map = _subs_screen(uid)
+        store[uid] = {"state": "subs", "sub_map": sub_map}
+        await message.answer(f"Нажми кнопку ниже.\n\n{ans}", keyboard=keyboard)
         return True
 
     # ── Быстрая подписка (по сохранённому prefer) ────────────────────────────
@@ -106,8 +144,8 @@ async def try_handle(_bot, message, state, text, uid) -> bool:
         pref_course = state["pref_course"]
         pref_dir = state["pref_dir"]
         if text == "◀ Назад":
-            _reset_to_menu(uid)
-            await message.answer("Управление подписками:", keyboard=_menu_kb())
+            ans, keyboard = _reset_to_menu(uid)
+            await message.answer(ans, keyboard=keyboard)
             return True
         if text == "🔄 Выбрать другое":
             store[uid] = {"step": "sub_course"}
@@ -135,8 +173,8 @@ async def try_handle(_bot, message, state, text, uid) -> bool:
     # ── Выбор курса/направления вручную ──────────────────────────────────────
     if isinstance(state, dict) and state.get("step") == "sub_course":
         if text == "◀ Назад":
-            _reset_to_menu(uid)
-            await message.answer("Управление подписками:", keyboard=_menu_kb())
+            ans, keyboard = _reset_to_menu(uid)
+            await message.answer(ans, keyboard=keyboard)
             return True
         if text.isdecimal() and int(text) in repo.directions_by_course:
             store.patch(uid, step="sub_direction", course=int(text))
