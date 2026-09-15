@@ -16,7 +16,10 @@ async def run(bot) -> None:
         await asyncio.sleep(config.REMINDER_POLL_SEC)
         try:
             now = config.now_msk()
-            for rid, uid, text, remind_at_str in model.list_pending():
+            # SQLite здесь синхронный, а busy_timeout — 5 секунд: при занятой
+            # базе такой вызов останавливает весь event loop, а не только этот
+            # воркер. Поэтому всё общение с БД уходит в поток.
+            for rid, uid, text, remind_at_str in await asyncio.to_thread(model.list_pending):
                 try:
                     remind_at = datetime.datetime.strptime(remind_at_str, "%Y-%m-%d %H:%M")
                 except ValueError:
@@ -25,10 +28,10 @@ async def run(bot) -> None:
                     try:
                         ok = await sender.send(bot, uid, f"⏰ Напоминание: {text}")
                         if ok:
-                            model.mark_sent(rid)
+                            await asyncio.to_thread(model.mark_sent, rid)
                     except Exception:
                         logging.exception("Reminder send failure id=%s", rid)
-            heartbeats.mark(heartbeats.REMINDERS)
+            await asyncio.to_thread(heartbeats.mark, heartbeats.REMINDERS)
         except Exception:
             # Воркер не должен умирать: одна ошибка не отменяет следующий тик.
             logging.exception("Reminder worker tick failed")

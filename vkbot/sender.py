@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import itertools
 import logging
 import time
@@ -42,7 +43,9 @@ async def send(bot: "Bot", uid: int, text: str) -> bool:
         code = getattr(e, "code", None) or getattr(getattr(e, "error", None), "code", None)
         if code in _DISABLED_CODES:
             from .models import subscriptions
-            subscriptions.disable_all_for_user(uid)
+            # В поток: при массовой рассылке таких отказов бывает много подряд,
+            # и каждый synchronous UPDATE останавливал бы весь event loop.
+            await asyncio.to_thread(subscriptions.disable_all_for_user, uid)
             logging.info(
                 "User %s disabled bot (VK code %s) — subscriptions deactivated", uid, code
             )

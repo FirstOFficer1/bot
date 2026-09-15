@@ -58,9 +58,12 @@ async def run(bot) -> None:
                 or monotonic - last_housekeeping >= config.HOUSEKEEPING_EVERY_SEC
             ):
                 last_housekeeping = monotonic
-                _housekeeping()
+                # В поток: busy_timeout 5 секунд, и синхронная чистка при
+                # занятой базе тормозит не только этот воркер, а весь event loop.
+                await asyncio.to_thread(_housekeeping)
 
-            for did, uid, subject, description, deadline_at_str, n_1day, n_1hour in model.list_pending():
+            pending = await asyncio.to_thread(model.list_pending)
+            for did, uid, subject, description, deadline_at_str, n_1day, n_1hour in pending:
                 try:
                     deadline_at = datetime.datetime.strptime(deadline_at_str, "%Y-%m-%d %H:%M")
                 except ValueError:
@@ -86,7 +89,7 @@ async def run(bot) -> None:
                             f"🕐 {deadline_fmt}",
                         )
                         if ok:
-                            model.mark_1day(did)
+                            await asyncio.to_thread(model.mark_1day, did)
                     except Exception:
                         logging.exception("Deadline 1day send failure id=%s", did)
 
@@ -99,10 +102,10 @@ async def run(bot) -> None:
                             f"🕐 {deadline_fmt}",
                         )
                         if ok:
-                            model.mark_1hour(did)
+                            await asyncio.to_thread(model.mark_1hour, did)
                     except Exception:
                         logging.exception("Deadline 1hour send failure id=%s", did)
-            heartbeats.mark(heartbeats.DEADLINES)
+            await asyncio.to_thread(heartbeats.mark, heartbeats.DEADLINES)
         except Exception:
             # Воркер не должен умирать: одна ошибка не отменяет следующий тик.
             logging.exception("Deadline worker tick failed")

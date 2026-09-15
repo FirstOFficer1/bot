@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 
 from ..config import now_msk
@@ -39,7 +40,9 @@ def _week_chunks(course: int, direction: str, week_type: str) -> list[str]:
 async def _send_week(message, course: int, direction: str, week_type: str, keyboard: str) -> None:
     """Шлёт неделю одним или несколькими сообщениями; клавиатура — на последнем."""
     wlabel = "чётная" if week_type == "чёт" else "нечётная"
-    chunks = _week_chunks(course, direction, week_type)
+    # Внутри — шесть запросов к расписанию подряд; в потоке они не держат
+    # event loop, пока человек ждёт неделю целиком.
+    chunks = await asyncio.to_thread(_week_chunks, course, direction, week_type)
     chunks[0] = f"📖 Вся неделя ({wlabel})\n{course} курс · {direction}\n\n{chunks[0]}"
     for i, chunk in enumerate(chunks):
         is_last = i == len(chunks) - 1

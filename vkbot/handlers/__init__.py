@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from vkbottle.bot import Message
 
 from . import (
@@ -52,8 +54,10 @@ def register(bot) -> None:
     async def dispatch(message: Message) -> None:
         uid = message.from_id
         # Регистрируем юзера моментально — чтобы /admin/users показал его сразу,
-        # ещё до того, как он что-то сохранит.
-        seen_users.touch(uid)
+        # ещё до того, как он что-то сохранит. В поток — потому что запись идёт
+        # на КАЖДОЕ входящее сообщение, и при занятой базе синхронный вызов
+        # тормозил бы разбор сообщений целиком.
+        await asyncio.to_thread(seen_users.touch, uid)
         text = (message.text or "").strip()
         state = store.get(uid)
         for handler in _PIPELINE:

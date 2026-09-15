@@ -77,15 +77,20 @@ async def run(bot) -> None:
             cutoff = (
                 now - datetime.timedelta(days=config.SENT_NOTIFS_CLEANUP_DAYS)
             ).date().isoformat()
-            sent_notifs.cleanup_older_than(cutoff)
+            # Всё, что ходит в SQLite, уезжает в поток: busy_timeout — 5 секунд,
+            # и при конкуренции с панелью синхронный запрос останавливал бы не
+            # только этот воркер, но и обработку сообщений — весь event loop.
+            await asyncio.to_thread(sent_notifs.cleanup_older_than, cutoff)
 
             db_day = _RU_DAYS.get(now.strftime("%A"), now.strftime("%A"))
             week = current_week_type()
 
-            for (course, direction), uids in _group_subscriptions().items():
-                for time_field, subject, teacher, room in _day_rows(
-                    course, direction, db_day, week
-                ):
+            groups = await asyncio.to_thread(_group_subscriptions)
+            for (course, direction), uids in groups.items():
+                day_rows = await asyncio.to_thread(
+                    _day_rows, course, direction, db_day, week
+                )
+                for time_field, subject, teacher, room in day_rows:
                     hhmm = _parse_start(time_field)
                     if hhmm is None:
                         continue
@@ -112,15 +117,28 @@ async def run(bot) -> None:
                     lines.append(f"• Начало: {start_str}")
                     text = "\n".join(lines)
 
+                    # Один запрос на пару вместо запроса на каждого подписчика.
+                    already = await asyncio.to_thread(
+                        sent_notifs.sent_uids, key, date_str, start_str
+                    )
+                    delivered: list[int] = []
                     for uid in uids:
-                        if sent_notifs.was_sent(uid, key, date_str, start_str):
+                        if uid in already:
                             continue
                         try:
                             if await sender.send(bot, uid, text):
-                                sent_notifs.mark(uid, key, date_str, start_str)
+                                delivered.append(uid)
                         except Exception:
                             logging.exception("Class notify send failure uid=%s", uid)
-            heartbeats.mark(heartbeats.CLASSES)
+                    # Отметки пишем пачкой после рассылки пары. Если процесс
+                    # упадёт между отправкой и записью, эти получатели поймают
+                    # уведомление второй раз — неприятно, но не страшно; цена
+                    # обратного варианта (запись на каждого) — N транзакций
+                    # внутри цикла отправки.
+                    await asyncio.to_thread(
+                        sent_notifs.mark_many, delivered, key, date_str, start_str
+                    )
+            await asyncio.to_thread(heartbeats.mark, heartbeats.CLASSES)
         except Exception:
             # Воркер не должен умирать: одна ошибка не отменяет следующий тик.
             logging.exception("Class notify worker tick failed")
