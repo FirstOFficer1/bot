@@ -57,7 +57,11 @@ def _week_chunks(course: int, direction: str, week_type: str, reserve: int = 0) 
     for day in _WEEK_ORDER:
         block = f"— {day} —\n{repo.get_day(course, direction, day, week_type)}"
         for piece in _split_long(block, _CHUNK_LIMIT - reserve):
-            limit = _CHUNK_LIMIT - (reserve if not chunks and not current else 0)
+            # Резерв держим, пока собираем ПЕРВЫЙ кусок: именно к нему
+            # вызывающий припишет заголовок. Условие «и current пуст» было
+            # ошибкой — как только в первый кусок попадала хоть строка, лимит
+            # снова становился полным, и заголовок перевешивал.
+            limit = _CHUNK_LIMIT - (reserve if not chunks else 0)
             if current and len(current) + len(piece) + 2 > limit:
                 chunks.append(current)
                 current = piece
