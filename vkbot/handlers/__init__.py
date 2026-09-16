@@ -46,6 +46,14 @@ _PIPELINE = (
 )
 
 
+async def dispatch_pipeline(bot, message, uid: int, text: str) -> None:
+    """Общий пайплайн для VK и Telegram: первый ``True`` останавливает цепочку."""
+    state = store.get(uid)
+    for handler in _PIPELINE:
+        if await handler(bot, message, state, text, uid):
+            return
+
+
 def register(bot) -> None:
     @bot.on.message()
     async def dispatch(message: Message) -> None:
@@ -61,7 +69,4 @@ def register(bot) -> None:
         # Отметка о посещении — в consent.try_handle: до согласия писать
         # vk_id в seen_users нельзя.
         text = (message.text or "").strip()
-        state = store.get(uid)
-        for handler in _PIPELINE:
-            if await handler(bot, message, state, text, uid):
-                return
+        await dispatch_pipeline(bot, message, uid, text)

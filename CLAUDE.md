@@ -13,12 +13,13 @@ editing user-facing text and docstrings.
 
 ## Processes (see `Procfile`)
 
-Two independent processes, each its own entry point:
+Three independent processes, each its own entry point:
 
-| Process    | Command               | Stack                  | Notes |
-|------------|-----------------------|------------------------|-------|
-| `vk`       | `python vk_bot.py`    | vkbottle (async)       | The main, actively-developed bot. `vk_bot.py` just calls `vkbot.bot.main`; `python -m vkbot` is equivalent. |
-| `web`      | `python web_panel.py` | Flask + waitress       | Admin panel. `--port 8080` overrides the default 5000; `--dev` falls back to the Werkzeug dev server. **Must run as exactly one process** — see below. |
+| Process      | Command               | Stack                  | Notes |
+|--------------|-----------------------|------------------------|-------|
+| `vk`         | `python vk_bot.py`    | vkbottle (async)       | The main bot. `vk_bot.py` just calls `vkbot.bot.main`; `python -m vkbot` is equivalent. |
+| `telegram`   | `python tg_bot.py`    | aiogram (async)        | Same handler pipeline as VK (`tgbot/` adapter). No GPT. TG users stored as `-telegram_id`. Needs `TELEGRAM_BOT_TOKEN` + `requirements-telegram.txt`. |
+| `web`        | `python web_panel.py` | Flask + waitress       | Admin panel. `--port 8080` overrides the default 5000; `--dev` falls back to the Werkzeug dev server. **Must run as exactly one process** — see below. |
 
 ## Tests
 

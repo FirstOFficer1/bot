@@ -78,7 +78,9 @@ def run(base_url: str, headed: bool, shots_dir: Path | None, excel: Path) -> int
         shot(page, shots_dir, "01-login")
 
         # ── 2. Неверный код отклоняется ──────────────────────────────────────
-        page.fill("input[name=code]", "000000")
+        # Поле кода — ровно 8 цифр (minlength/pattern). Шестизначный
+        # «000000» браузер даже не отправит, и проверка ниже ложно падает.
+        page.fill("input[name=code]", "00000000")
         page.click("button[type=submit]")
         page.wait_for_load_state()
         check("error" in page.url or "Неверный" in page.content(),

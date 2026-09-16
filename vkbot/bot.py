@@ -37,6 +37,9 @@ def build_bot() -> Bot:
 def main() -> None:
     _setup_logging()
     bot = build_bot()
+    from . import sender
+
+    sender.set_vk_bot(bot)
     bot.loop_wrapper.add_task(reminders.run(bot))
     bot.loop_wrapper.add_task(deadlines.run(bot))
     bot.loop_wrapper.add_task(classes.run(bot))

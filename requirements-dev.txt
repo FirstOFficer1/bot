@@ -12,6 +12,7 @@
 pytest>=8.0
 pytest-asyncio>=0.23     # асинхронные хендлеры бота в tests/test_handlers_dialogs.py
 playwright>=1.40         # браузерная smoke-проверка панели
+aiogram>=3.20,<4         # Telegram-адаптер (tests/test_telegram_adapter.py)
 
 # Прототип составителя расписания (scheduler/). В рантайме бота не нужен —
 # поэтому здесь, а не в requirements.txt.

@@ -61,7 +61,9 @@ jobs:
       - name: Запуск панели
         env:
           DATA_DIR: /tmp/vkbot-smoke
-          PANEL_SECRET: ci-secret-not-for-production
+          # ≥32 байт: иначе web_panel.py сразу SystemExit, а curl-петля
+          # ниже молча истекает и smoke падает уже на connect.
+          PANEL_SECRET: ci-secret-not-for-production-32b
           ADMIN_ID: "1001"
           UPLOAD_API_TOKEN: ci-token
           PANEL_BASE_URL: http://127.0.0.1:5000
@@ -69,15 +71,24 @@ jobs:
         run: |
           mkdir -p /tmp/vkbot-smoke
           python web_panel.py > /tmp/panel.log 2>&1 &
+          ready=0
           for i in $(seq 1 30); do
-            curl -sf -o /dev/null http://127.0.0.1:5000/login && break
+            if curl -sf -o /dev/null http://127.0.0.1:5000/login; then
+              ready=1
+              break
+            fi
             sleep 1
           done
+          if [ "$ready" != 1 ]; then
+            echo "Панель не поднялась за 30с" >&2
+            cat /tmp/panel.log >&2 || true
+            exit 1
+          fi
       - name: Прогон браузером
         env:
           DATA_DIR: /tmp/vkbot-smoke
           ADMIN_ID: "1001"
-          PANEL_SECRET: ci-secret-not-for-production
+          PANEL_SECRET: ci-secret-not-for-production-32b
           VK_TOKEN: ""
         run: python tools/smoke_panel.py --excel demo_schedule.xlsx --shots /tmp/shots
       - name: Лог панели при падении

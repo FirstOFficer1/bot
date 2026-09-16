@@ -13,6 +13,12 @@ load_dotenv()
 # ── VK API ────────────────────────────────────────────────────────────────────
 VK_TOKEN: str = os.getenv("VK_TOKEN", "")
 
+# ── Telegram (опционально) ────────────────────────────────────────────────────
+# Токен от @BotFather. Без него процесс `python tg_bot.py` не стартует.
+# VK-процесс его не требует; если задан — воркеры VK смогут пушить и в Telegram
+# (uid < 0), когда sender.set_telegram_bot вызван из tg-процесса или здесь.
+TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
+
 
 def int_env(name: str, default: int = 0) -> int:
     """Целое из env, устойчивое к пустому и мусорному значению.

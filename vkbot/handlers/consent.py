@@ -44,11 +44,18 @@ def _links() -> str:
     )
 
 
-def _offer() -> str:
+def _offer(uid: int) -> str:
+    from ..ids import is_telegram
+
+    account = (
+        "идентификатор Telegram и имя"
+        if is_telegram(uid)
+        else "идентификатор ВКонтакте и имя"
+    )
     return (
         "📄 Прежде чем начнём — одна формальность.\n\n"
         "Чтобы бот работал, он сохраняет о тебе:\n"
-        "• идентификатор ВКонтакте и имя;\n"
+        f"• {account};\n"
         "• выбранные курс и направление;\n"
         "• то, что ты создашь сам — заметки, напоминания, дедлайны, подписки на пары.\n\n"
         "Данные никому не передаются и для рекламы не используются. "
@@ -134,5 +141,5 @@ async def try_handle(_bot, message, _state, text, uid) -> bool:
         )
         return True
 
-    await message.answer(_offer(), keyboard=CONSENT_KB)
+    await message.answer(_offer(uid), keyboard=CONSENT_KB)
     return True

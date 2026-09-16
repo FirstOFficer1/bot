@@ -6,6 +6,7 @@
 #   pip install -r requirements.txt
 #
 # Тесты и Playwright — в requirements-dev.txt.
+# Telegram-бот (тот же функционал, без GPT) — requirements-telegram.txt.
 
 # ── VK-бот ───────────────────────────────────────────────────────────────────
 vkbottle>=4.10,<5
