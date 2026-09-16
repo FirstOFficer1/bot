@@ -2,9 +2,13 @@
 #   # один раз: пользователь без shell, данные отдельно от кода
 #   useradd --system --home /var/lib/vkbot --shell /usr/sbin/nologin vkbot
 #   mkdir -p /var/lib/vkbot && chown vkbot:vkbot /var/lib/vkbot
+#   # /root обычно 0700 — без traverse vkbot не войдёт в /root/vkbot
+#   chmod 711 /root
 #   chown -R root:vkbot /root/vkbot && chmod -R g+rX /root/vkbot
-#   chown vkbot:vkbot /root/vkbot/*.db /root/vkbot/schedule_versions 2>/dev/null || true
-#   chmod 640 /root/vkbot/.env
+#   # SQLite WAL пишет -wal/-shm рядом с .db → каталог проекта нужен на запись
+#   chmod 2775 /root/vkbot
+#   chown vkbot:vkbot /root/vkbot/*.db /root/vkbot/schedule_versions /root/vkbot/.schedule_reload 2>/dev/null || true
+#   chmod 640 /root/vkbot/.env && chgrp vkbot /root/vkbot/.env
 #   cp deploy/vkpanel.service /etc/systemd/system/
 #   systemctl daemon-reload && systemctl enable --now vkpanel
 #   journalctl -u vkpanel -f
