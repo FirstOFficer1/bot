@@ -1129,7 +1129,8 @@ _BASE_TPL = """
        владелец теперь золотой, а красный остаётся за акцентом и опасными
        действиями. */
     .role-pill.owner { background: linear-gradient(135deg, #F4C245, #C99A21); color: #3B2C05; }
-    .role-pill.admin { background: linear-gradient(135deg, #818CF8, #6366F1); color: white; }
+    /* Нейтраль вместо indigo — акцент вуза остаётся единственным цветным якорем. */
+    .role-pill.admin { background: var(--surface-3); color: var(--text); border: 1px solid var(--border-strong); }
     .role-pill.user  { background: var(--surface-3); color: var(--text-2); }
 
     /* ============================================================
@@ -1649,6 +1650,165 @@ _BASE_TPL = """
     .cal-block-meta { font-size: 10.5px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .cal-block-foot { display: flex; align-items: center; gap: 6px; margin-top: 2px; flex-wrap: wrap; }
     .cal-more { font-size: 10.5px; color: var(--text-3); padding: 4px 6px; border-radius: 5px; background: var(--surface-2); text-align: center; }
+
+    /* ============================================================
+       Student shell (не-админы): без сайдбара, нижние табы
+       ============================================================ */
+    .app-shell.student-shell {
+      grid-template-columns: 1fr;
+      min-height: 100dvh;
+      padding-bottom: calc(60px + env(safe-area-inset-bottom, 0px));
+    }
+    .stu-top {
+      position: sticky; top: 0; z-index: 10;
+      display: flex; align-items: center; gap: 12px;
+      padding: max(10px, env(safe-area-inset-top, 0px)) 18px 12px;
+      background: color-mix(in srgb, var(--bg) 88%, transparent);
+      backdrop-filter: saturate(150%) blur(10px);
+      -webkit-backdrop-filter: saturate(150%) blur(10px);
+      border-bottom: 1px solid var(--border);
+    }
+    .stu-top-brand {
+      display: flex; align-items: center; gap: 10px;
+      min-width: 0; flex: 1;
+      text-decoration: none; color: inherit;
+    }
+    .stu-top-logo { width: 28px; height: 28px; flex: none; }
+    .stu-top-name {
+      font-weight: 700; font-size: 14px; letter-spacing: -.01em;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .stu-top .week-chip { margin-left: auto; flex: none; }
+    .student-shell .page {
+      padding: 18px 16px 28px;
+      max-width: 560px;
+      margin: 0 auto;
+      width: 100%;
+    }
+    .stu-tabbar {
+      position: fixed; left: 0; right: 0; bottom: 0; z-index: 40;
+      display: grid; grid-template-columns: repeat(3, 1fr);
+      height: calc(58px + env(safe-area-inset-bottom, 0px));
+      padding: 6px 8px env(safe-area-inset-bottom, 0px);
+      background: color-mix(in srgb, var(--surface) 92%, transparent);
+      backdrop-filter: saturate(160%) blur(12px);
+      -webkit-backdrop-filter: saturate(160%) blur(12px);
+      border-top: 1px solid var(--border);
+    }
+    .stu-tab {
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 3px; text-decoration: none;
+      color: var(--text-3); font-size: 10.5px; font-weight: 600;
+      letter-spacing: .02em; border-radius: 12px;
+      transition: color 140ms, background 140ms;
+    }
+    .stu-tab svg { width: 22px; height: 22px; stroke: currentColor; fill: none; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+    .stu-tab:hover { color: var(--text); background: color-mix(in srgb, var(--text) 4%, transparent); }
+    .stu-tab.active { color: var(--accent); }
+    .stu-tab.active svg { stroke-width: 2.1; }
+
+    .stu-hero { margin-bottom: 18px; }
+    .stu-kicker {
+      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+      font-size: 11.5px; font-weight: 700; letter-spacing: .08em;
+      text-transform: uppercase; color: var(--text-3); margin-bottom: 6px;
+    }
+    .stu-hero h1 {
+      margin: 0; font-size: 28px; font-weight: 800; letter-spacing: -.03em;
+      line-height: 1.15; color: var(--text);
+    }
+    .stu-hero-sub { margin: 8px 0 0; font-size: 13.5px; color: var(--text-3); line-height: 1.45; }
+    .stu-hero-sub strong { color: var(--accent); font-weight: 700; }
+
+    .stu-timeline {
+      position: relative;
+      display: flex; flex-direction: column; gap: 0;
+      margin-bottom: 22px;
+    }
+    .stu-timeline::before {
+      content: ""; position: absolute;
+      left: 52px; top: 8px; bottom: 8px; width: 1px;
+      background: var(--border);
+    }
+    .stu-pair {
+      display: grid; grid-template-columns: 52px 16px 1fr;
+      gap: 0 10px; align-items: start;
+      padding: 10px 0;
+      animation: stu-fade .38s ease both;
+    }
+    .stu-pair:nth-child(2) { animation-delay: .04s; }
+    .stu-pair:nth-child(3) { animation-delay: .08s; }
+    .stu-pair:nth-child(4) { animation-delay: .12s; }
+    .stu-pair:nth-child(5) { animation-delay: .16s; }
+    @keyframes stu-fade {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: none; }
+    }
+    .stu-pair-time {
+      font-family: var(--font-mono); font-size: 12.5px; font-weight: 600;
+      color: var(--text-2); text-align: right; padding-top: 2px;
+      font-variant-numeric: tabular-nums;
+    }
+    .stu-pair-dot {
+      width: 10px; height: 10px; border-radius: 50%;
+      background: var(--type-color, var(--accent));
+      border: 2px solid var(--bg);
+      box-shadow: 0 0 0 1px color-mix(in srgb, var(--type-color, var(--accent)) 45%, transparent);
+      margin-top: 5px; z-index: 1; justify-self: center;
+    }
+    .stu-pair-body { min-width: 0; padding-bottom: 4px; }
+    .stu-pair-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }
+    .stu-pair-subject {
+      font-weight: 700; font-size: 15px; letter-spacing: -.015em;
+      line-height: 1.3; color: var(--text); margin: 0 0 4px;
+    }
+    .stu-pair-meta {
+      font-size: 12.5px; color: var(--text-3);
+      display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+    }
+    .stu-pair-meta .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+    .stu-week {
+      font-size: 10.5px; font-weight: 600; color: var(--accent);
+      background: var(--accent-soft); padding: 1px 7px; border-radius: 999px;
+    }
+    .stu-empty {
+      text-align: center; padding: 36px 18px;
+      border: 1px dashed var(--border); border-radius: var(--radius-md);
+      background: var(--surface);
+      color: var(--text-3); font-size: 14px; line-height: 1.5;
+    }
+    .stu-empty strong { display: block; color: var(--text); font-size: 15px; margin-bottom: 4px; }
+    .stu-section-label {
+      font-size: 11px; font-weight: 700; letter-spacing: .08em;
+      text-transform: uppercase; color: var(--text-3);
+      margin: 0 0 10px;
+    }
+    .stu-tomorrow {
+      display: block; text-decoration: none; color: inherit;
+      padding: 14px 16px; border-radius: var(--radius-md);
+      background: var(--surface); border: 1px solid var(--border);
+      margin-bottom: 18px;
+      transition: border-color 120ms, background 120ms;
+    }
+    .stu-tomorrow:hover { border-color: var(--border-strong); background: var(--surface-2); }
+    .stu-tomorrow-row {
+      display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+    }
+    .stu-tomorrow-title { font-weight: 700; font-size: 14px; }
+    .stu-tomorrow-meta { font-size: 12.5px; color: var(--text-3); }
+    .stu-group {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius-md); padding: 16px;
+      margin-bottom: 12px;
+    }
+    .stu-group h2 { margin: 0 0 6px; font-size: 15px; font-weight: 700; }
+    .stu-group p { margin: 0; font-size: 12.5px; color: var(--text-3); line-height: 1.45; }
+    .stu-group-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+    .stu-links { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+    @media (min-width: 768px) {
+      .student-shell .page { padding-top: 24px; }
+      .stu-hero h1 { font-size: 32px; }
+    }
   </style>
 </head>
 <body>
@@ -1719,6 +1879,20 @@ _BASE_TPL = """
   </div>
 {% endmacro %}
 
+{% macro legal_foot() %}
+  {# Правила VK Mini Apps: п. 1.1.4 — документы должны быть доступны внутри
+     приложения, п. 2.4.1 — как и способ связи. Внутри VK пользователь
+     входит бесшовно и страницу входа с этими ссылками не видит вовсе. #}
+  <footer class="app-foot">
+    <a href="{{ url_for('privacy') }}">Политика конфиденциальности</a>
+    <span aria-hidden="true">·</span>
+    <a href="{{ url_for('terms') }}">Условия использования</a>
+    <span aria-hidden="true">·</span>
+    <a href="{{ support_url }}" target="_blank" rel="noopener">Написать в поддержку</a>
+  </footer>
+{% endmacro %}
+
+{% if is_admin %}
 <div class="app-shell">
   <!-- Static sidebar (desktop / tablet rail) -->
   <aside class="sidebar desktop-sb">
@@ -1764,19 +1938,44 @@ _BASE_TPL = """
     </div>
     <div class="page">
       {{ content | safe }}
-      {# Правила VK Mini Apps: п. 1.1.4 — документы должны быть доступны внутри
-         приложения, п. 2.4.1 — как и способ связи. Внутри VK пользователь
-         входит бесшовно и страницу входа с этими ссылками не видит вовсе. #}
-      <footer class="app-foot">
-        <a href="{{ url_for('privacy') }}">Политика конфиденциальности</a>
-        <span aria-hidden="true">·</span>
-        <a href="{{ url_for('terms') }}">Условия использования</a>
-        <span aria-hidden="true">·</span>
-        <a href="{{ support_url }}" target="_blank" rel="noopener">Написать в поддержку</a>
-      </footer>
+      {{ legal_foot() }}
     </div>
   </main>
 </div>
+{% else %}
+{# Студент / обычный пользователь: компактный shell под VK Mini App. #}
+<div class="app-shell student-shell">
+  <main class="main">
+    <header class="stu-top">
+      <a class="stu-top-brand" href="{{ url_for('dashboard') }}">
+        <img class="stu-top-logo" src="/static/logo-mark.svg" alt="" width="28" height="28">
+        <span class="stu-top-name">Электронное расписание</span>
+      </a>
+      {% if current_week %}
+        <span class="chip week-chip">{{ current_week }}</span>
+      {% endif %}
+    </header>
+    <div class="page">
+      {{ content | safe }}
+      {{ legal_foot() }}
+    </div>
+  </main>
+  <nav class="stu-tabbar" aria-label="Основная навигация">
+    <a href="{{ url_for('dashboard') }}" class="stu-tab {{ 'active' if ep == 'dashboard' }}" aria-current="{{ 'page' if ep == 'dashboard' else 'false' }}">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5" width="17" height="15" rx="2"/><path d="M8 3.5v3M16 3.5v3M3.5 10h17"/></svg>
+      <span>Сегодня</span>
+    </a>
+    <a href="{{ url_for('schedule_page', quick='today') }}" class="stu-tab {{ 'active' if ep == 'schedule_page' }}" aria-current="{{ 'page' if ep == 'schedule_page' else 'false' }}">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 7h12M8 12h12M8 17h12"/><path d="M4 7h.01M4 12h.01M4 17h.01"/></svg>
+      <span>Расписание</span>
+    </a>
+    <a href="{{ url_for('me_page') }}" class="stu-tab {{ 'active' if ep == 'me_page' }}" aria-current="{{ 'page' if ep == 'me_page' else 'false' }}">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.25"/><path d="M5.5 19.2c1.6-3 4-4.5 6.5-4.5s4.9 1.5 6.5 4.5"/></svg>
+      <span>Профиль</span>
+    </a>
+  </nav>
+</div>
+{% endif %}
 
 <script src="/static/bootstrap.bundle.min.js"></script>
 <script>
@@ -1847,8 +2046,8 @@ _LOGIN_TPL = """
     body {
       font-family: var(--font); color: var(--text);
       background:
-        radial-gradient(circle at 18% 18%, color-mix(in srgb, var(--accent) 18%, transparent), transparent 55%),
-        radial-gradient(circle at 82% 88%, color-mix(in srgb, #6366F1 14%, transparent), transparent 55%),
+        radial-gradient(circle at 18% 18%, color-mix(in srgb, var(--accent) 16%, transparent), transparent 55%),
+        radial-gradient(circle at 88% 92%, color-mix(in srgb, var(--accent) 7%, transparent), transparent 50%),
         var(--bg);
       display: flex; align-items: center; justify-content: center;
       /* Безопасные зоны: viewport-fit=cover отдаёт странице область под вырезом
@@ -2074,87 +2273,7 @@ _DASHBOARD_CONTENT = """
   </div>
 {% endmacro %}
 
-<div class="d-flex align-items-center justify-content-between mb-4" style="flex-wrap:wrap;gap:10px;">
-  <div>
-    <h1 class="mb-0 h3">{% if is_admin %}📊 Дашборд{% else %}📅 Моё расписание{% endif %}</h1>
-    <div style="margin-top:4px;color:var(--text-3);font-size:13px;">
-      Привет, {{ display_name or 'друг' }}!
-      {% if pref %}Твоя группа — <strong style="color:var(--accent);">{{ pref[0] }} курс · {{ pref[1] }}</strong>, ниже только её пары.
-      {% else %}Сейчас видно пары всех курсов — отметь свою группу, чтобы остались только твои.
-      {% endif %}
-    </div>
-  </div>
-  <div style="display:flex;gap:8px;flex-wrap:wrap;">
-    <a href="{{ url_for('schedule_page', quick='today') }}" class="btn btn-outline-secondary btn-sm">📅 Полное расписание</a>
-    <a href="{{ url_for('calendar_ics') }}" class="btn btn-outline-secondary btn-sm" title="Скачать .ics для Google/Apple Calendar">📥 В календарь</a>
-    {% if is_admin %}
-      <a href="{{ url_for('upload_page') }}" class="btn btn-primary btn-sm">📤 Загрузить расписание</a>
-      <a href="{{ url_for('download_current') }}" class="btn btn-outline-secondary btn-sm">⬇ Скачать Excel</a>
-    {% endif %}
-  </div>
-</div>
-
-<!-- ─── Подписка на курс/направление ─────────────────────── -->
-<div class="card mb-4" style="padding:18px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
-  <div style="font-size:28px;">{% if pref %}🎯{% else %}🔔{% endif %}</div>
-  <div style="flex:1;min-width:200px;">
-    <div style="font-weight:700;font-size:14.5px;color:var(--text);">
-      {% if pref %}Твоя группа выбрана{% else %}Выбери свою группу — курс и направление{% endif %}
-    </div>
-    <div style="color:var(--text-3);font-size:12.5px;margin-top:2px;">
-      {% if pref %}
-        Твоя группа — <strong style="color:var(--text-2);">{{ pref[0] }} курс · {{ pref[1] }}</strong>.
-        Ниже показаны её пары на сегодня и завтра, в календарь попадают они же,
-        а бот присылает в VK напоминание за {{ notify_before_min }} минут до начала каждой пары.
-        Группу можно сменить или отключить — расписание остальных курсов никуда не денется.
-      {% else %}
-        Это как выбрать свою группу один раз, чтобы дальше не искать её в общем расписании.
-        Что изменится: ниже останутся только пары твоей группы вместо пар всех курсов,
-        в календарь попадут они же, а бот начнёт присылать в VK напоминание
-        за {{ notify_before_min }} минут до начала каждой пары. Отключить можно в любой момент.
-      {% endif %}
-    </div>
-  </div>
-  <button type="button" class="btn btn-primary btn-sm" onclick="document.getElementById('subscribeForm').style.display='block'; this.style.display='none';">
-    {% if pref %}🔄 Сменить группу{% else %}🔔 Выбрать группу{% endif %}
-  </button>
-  {% if pref %}
-    <form method="post" action="{{ url_for('me_unsubscribe') }}" style="margin:0;"
-          data-confirm="Отключить напоминания и снова видеть пары всех курсов? Вернуть выбор можно в любой момент.">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <button class="btn btn-outline-secondary btn-sm" style="color:#DC2626;border-color:color-mix(in srgb,#DC2626 30%, var(--border));">✕ Отключить</button>
-    </form>
-  {% endif %}
-</div>
-
-<form id="subscribeForm" method="post" action="{{ url_for('me_subscribe') }}"
-      class="card mb-4" style="padding:18px;display:none;flex-wrap:wrap;gap:12px;align-items:end;">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-  <div style="flex:1;min-width:140px;">
-    <label class="form-label" style="font-size:11px;margin-bottom:4px;">Курс</label>
-    <select aria-label="Курс" name="course" id="subCourse" class="form-select form-select-sm" required>
-      <option value="">— выбери —</option>
-      {% for c in all_courses %}
-        <option value="{{ c }}" {% if pref and pref[0] == c %}selected{% endif %}>{{ c }} курс</option>
-      {% endfor %}
-    </select>
-  </div>
-  <div style="flex:2;min-width:200px;">
-    <label class="form-label" style="font-size:11px;margin-bottom:4px;">Направление</label>
-    <select aria-label="Направление" name="direction" id="subDirection" class="form-select form-select-sm" required>
-      <option value="">— сначала выбери курс —</option>
-      {% if pref %}
-        {% for d in dirs_by_course.get(pref[0], []) %}
-          <option value="{{ d }}" {% if d == pref[1] %}selected{% endif %}>{{ d }}</option>
-        {% endfor %}
-      {% endif %}
-    </select>
-  </div>
-  <button class="btn btn-primary btn-sm" style="height:32px;">✓ Сохранить</button>
-  <button type="button" class="btn btn-outline-secondary btn-sm" style="height:32px;"
-          onclick="document.getElementById('subscribeForm').style.display='none';">Отмена</button>
-</form>
-
+{% macro subscribe_script() %}
 <script>
 (function(){
   // Динамическое обновление направлений при смене курса
@@ -2186,20 +2305,230 @@ _DASHBOARD_CONTENT = """
   }
 })();
 </script>
+{% endmacro %}
 
-<!-- ─── Расписание: сегодня и завтра (видно всем) ─────────── -->
-<div class="row g-3 mb-4">
-  <div class="col-lg-6">{{ day_card('📍 Сегодня' + (' · ' + pref[0]|string + 'к ' + pref[1] if pref else ''), preview.today) }}</div>
-  <div class="col-lg-6">{{ day_card('→ Завтра' + (' · ' + pref[0]|string + 'к ' + pref[1] if pref else ''), preview.tomorrow, 'tomorrow') }}</div>
-</div>
+{% if not is_admin %}
+{# ── Студент: лента «Сегодня» ─────────────────────────────────────────── #}
+{% set today = preview.today %}
+{% set tomorrow = preview.tomorrow %}
+<section class="stu-hero">
+  <div class="stu-kicker">
+    <span>Сегодня</span>
+    {% if today.week %}<span class="stu-week">{{ today.week }}</span>{% endif %}
+  </div>
+  <h1>{{ today.day or 'Расписание' }}</h1>
+  <p class="stu-hero-sub">
+    {% if pref %}
+      {{ display_name or 'Привет' }}, твоя группа —
+      <strong>{{ pref[0] }} курс · {{ pref[1] }}</strong>
+    {% else %}
+      Привет{% if display_name %}, {{ display_name }}{% endif %}!
+      Выбери группу — останутся только твои пары и напоминания в VK.
+    {% endif %}
+  </p>
+</section>
 
-{% if not pref and not is_admin %}
-  <div class="card" style="padding:18px;text-align:center;color:var(--text-3);font-size:13.5px;">
-    💡 Выбор группы ничего не скрывает: расписание любого курса всегда открывается кнопкой «📅 Полное расписание» вверху страницы.
+{% if today.is_sunday %}
+  <div class="stu-empty"><strong>Выходной</strong>В воскресенье занятий нет</div>
+{% elif not today.rows %}
+  <div class="stu-empty">
+    <strong>Сегодня пар нет</strong>
+    {% if pref %}На завтра можно глянуть ниже или открыть полное расписание.
+    {% else %}Если группа ещё не выбрана — сначала отметь её, иначе здесь все курсы сразу.
+    {% endif %}
+  </div>
+{% else %}
+  <div class="stu-timeline">
+    {% for r in today.rows %}
+      <article class="stu-pair" style="--type-color: {{ tcolor(r[8]) }};">
+        <div class="stu-pair-time">{{ r[3] }}</div>
+        <span class="stu-pair-dot" aria-hidden="true"></span>
+        <div class="stu-pair-body">
+          <div class="stu-pair-top">
+            {% if r[8] %}<span class="type-badge" style="--type-color: {{ tcolor(r[8]) }};">{{ type_short(r[8]) }}</span>{% endif %}
+            {% if r[7] %}<span class="stu-week">{{ r[7] }}</span>{% endif %}
+            {% if not pref %}
+              <span class="course-chip" style="background:var(--surface-3);color:var(--text-2);padding:1px 7px;border-radius:999px;font-size:10.5px;font-weight:600;">{{ r[0] }}к · {{ r[1] }}</span>
+            {% endif %}
+          </div>
+          <h2 class="stu-pair-subject">{{ r[4] }}</h2>
+          <div class="stu-pair-meta">
+            {% if r[5] %}<span>{{ r[5] }}</span>{% endif %}
+            {% if r[5] and r[6] %}<span aria-hidden="true">·</span>{% endif %}
+            {% if r[6] %}<span class="mono">ауд. {{ r[6] }}</span>{% endif %}
+          </div>
+        </div>
+      </article>
+    {% endfor %}
   </div>
 {% endif %}
 
-{% if is_admin and stats %}
+{% if not today.is_sunday %}
+  <a class="stu-tomorrow" href="{{ url_for('schedule_page', quick='tomorrow') }}">
+    <div class="stu-tomorrow-row">
+      <span class="stu-tomorrow-title">Завтра{% if tomorrow.day %} · {{ tomorrow.day }}{% endif %}</span>
+      <span class="stu-tomorrow-meta">
+        {% if tomorrow.is_sunday %}выходной
+        {% elif tomorrow.rows %}{{ tomorrow.rows|length }} пар →
+        {% else %}пар нет →{% endif %}
+      </span>
+    </div>
+  </a>
+{% endif %}
+
+<div class="stu-group" id="groupBlock">
+  <h2>{% if pref %}Твоя группа{% else %}Выбери группу{% endif %}</h2>
+  <p>
+    {% if pref %}
+      Сейчас: <strong style="color:var(--text);">{{ pref[0] }} курс · {{ pref[1] }}</strong>.
+      Бот присылает в VK напоминание за {{ notify_before_min }} минут до начала каждой пары.
+      Отключить можно в любой момент.
+    {% else %}
+      Один раз отметь курс и направление — ниже останутся только пары твоей группы,
+      в календарь попадут они же, а бот начнёт присылать в VK напоминание
+      за {{ notify_before_min }} минут до начала каждой пары. Отключить можно в любой момент.
+    {% endif %}
+  </p>
+  <div class="stu-group-actions">
+    <button type="button" class="btn btn-primary btn-sm"
+            onclick="document.getElementById('subscribeForm').style.display='flex'; this.style.display='none';">
+      {% if pref %}Сменить группу{% else %}Выбрать группу{% endif %}
+    </button>
+    {% if pref %}
+      <form method="post" action="{{ url_for('me_unsubscribe') }}" style="margin:0;"
+            data-confirm="Отключить напоминания и снова видеть пары всех курсов? Вернуть выбор можно в любой момент.">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button class="btn btn-outline-secondary btn-sm" style="color:#DC2626;border-color:color-mix(in srgb,#DC2626 30%, var(--border));">Отключить</button>
+      </form>
+    {% endif %}
+  </div>
+</div>
+
+<form id="subscribeForm" method="post" action="{{ url_for('me_subscribe') }}"
+      class="stu-group" style="display:none;flex-wrap:wrap;gap:12px;align-items:end;">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <div style="flex:1;min-width:140px;">
+    <label class="form-label" style="font-size:11px;margin-bottom:4px;">Курс</label>
+    <select aria-label="Курс" name="course" id="subCourse" class="form-select form-select-sm" required>
+      <option value="">— выбери —</option>
+      {% for c in all_courses %}
+        <option value="{{ c }}" {% if pref and pref[0] == c %}selected{% endif %}>{{ c }} курс</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div style="flex:2;min-width:200px;">
+    <label class="form-label" style="font-size:11px;margin-bottom:4px;">Направление</label>
+    <select aria-label="Направление" name="direction" id="subDirection" class="form-select form-select-sm" required>
+      <option value="">— сначала выбери курс —</option>
+      {% if pref %}
+        {% for d in dirs_by_course.get(pref[0], []) %}
+          <option value="{{ d }}" {% if d == pref[1] %}selected{% endif %}>{{ d }}</option>
+        {% endfor %}
+      {% endif %}
+    </select>
+  </div>
+  <button class="btn btn-primary btn-sm" style="height:32px;">Сохранить</button>
+  <button type="button" class="btn btn-outline-secondary btn-sm" style="height:32px;"
+          onclick="document.getElementById('subscribeForm').style.display='none';">Отмена</button>
+</form>
+{{ subscribe_script() }}
+
+<div class="stu-links">
+  <a href="{{ url_for('schedule_page', quick='today') }}" class="btn btn-outline-secondary btn-sm">Полное расписание</a>
+  <a href="{{ url_for('calendar_ics') }}" class="btn btn-outline-secondary btn-sm" title="Скачать .ics для Google/Apple Calendar">В календарь</a>
+</div>
+{% if not pref %}
+  <p style="margin:14px 0 0;font-size:12.5px;color:var(--text-3);line-height:1.45;">
+    Выбор группы ничего не скрывает: любое направление открывается через «Полное расписание».
+  </p>
+{% endif %}
+
+{% else %}
+{# ── Админ: дашборд как раньше ────────────────────────────────────────── #}
+<div class="d-flex align-items-center justify-content-between mb-4" style="flex-wrap:wrap;gap:10px;">
+  <div>
+    <h1 class="mb-0 h3">Дашборд</h1>
+    <div style="margin-top:4px;color:var(--text-3);font-size:13px;">
+      Привет, {{ display_name or 'друг' }}!
+      {% if pref %}Твоя группа — <strong style="color:var(--accent);">{{ pref[0] }} курс · {{ pref[1] }}</strong>, ниже только её пары.
+      {% else %}Сейчас видно пары всех курсов — отметь свою группу, чтобы остались только твои.
+      {% endif %}
+    </div>
+  </div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;">
+    <a href="{{ url_for('schedule_page', quick='today') }}" class="btn btn-outline-secondary btn-sm">Полное расписание</a>
+    <a href="{{ url_for('calendar_ics') }}" class="btn btn-outline-secondary btn-sm" title="Скачать .ics для Google/Apple Calendar">В календарь</a>
+    <a href="{{ url_for('upload_page') }}" class="btn btn-primary btn-sm">Загрузить расписание</a>
+    <a href="{{ url_for('download_current') }}" class="btn btn-outline-secondary btn-sm">Скачать Excel</a>
+  </div>
+</div>
+
+<div class="card mb-4" style="padding:18px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+  <div style="flex:1;min-width:200px;">
+    <div style="font-weight:700;font-size:14.5px;color:var(--text);">
+      {% if pref %}Твоя группа выбрана{% else %}Выбери свою группу — курс и направление{% endif %}
+    </div>
+    <div style="color:var(--text-3);font-size:12.5px;margin-top:2px;">
+      {% if pref %}
+        Твоя группа — <strong style="color:var(--text-2);">{{ pref[0] }} курс · {{ pref[1] }}</strong>.
+        Ниже показаны её пары на сегодня и завтра, в календарь попадают они же,
+        а бот присылает в VK напоминание за {{ notify_before_min }} минут до начала каждой пары.
+        Группу можно сменить или отключить — расписание остальных курсов никуда не денется.
+      {% else %}
+        Это как выбрать свою группу один раз, чтобы дальше не искать её в общем расписании.
+        Что изменится: ниже останутся только пары твоей группы вместо пар всех курсов,
+        в календарь попадут они же, а бот начнёт присылать в VK напоминание
+        за {{ notify_before_min }} минут до начала каждой пары. Отключить можно в любой момент.
+      {% endif %}
+    </div>
+  </div>
+  <button type="button" class="btn btn-primary btn-sm" onclick="document.getElementById('subscribeForm').style.display='block'; this.style.display='none';">
+    {% if pref %}Сменить группу{% else %}Выбрать группу{% endif %}
+  </button>
+  {% if pref %}
+    <form method="post" action="{{ url_for('me_unsubscribe') }}" style="margin:0;"
+          data-confirm="Отключить напоминания и снова видеть пары всех курсов? Вернуть выбор можно в любой момент.">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button class="btn btn-outline-secondary btn-sm" style="color:#DC2626;border-color:color-mix(in srgb,#DC2626 30%, var(--border));">Отключить</button>
+    </form>
+  {% endif %}
+</div>
+
+<form id="subscribeForm" method="post" action="{{ url_for('me_subscribe') }}"
+      class="card mb-4" style="padding:18px;display:none;flex-wrap:wrap;gap:12px;align-items:end;">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <div style="flex:1;min-width:140px;">
+    <label class="form-label" style="font-size:11px;margin-bottom:4px;">Курс</label>
+    <select aria-label="Курс" name="course" id="subCourse" class="form-select form-select-sm" required>
+      <option value="">— выбери —</option>
+      {% for c in all_courses %}
+        <option value="{{ c }}" {% if pref and pref[0] == c %}selected{% endif %}>{{ c }} курс</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div style="flex:2;min-width:200px;">
+    <label class="form-label" style="font-size:11px;margin-bottom:4px;">Направление</label>
+    <select aria-label="Направление" name="direction" id="subDirection" class="form-select form-select-sm" required>
+      <option value="">— сначала выбери курс —</option>
+      {% if pref %}
+        {% for d in dirs_by_course.get(pref[0], []) %}
+          <option value="{{ d }}" {% if d == pref[1] %}selected{% endif %}>{{ d }}</option>
+        {% endfor %}
+      {% endif %}
+    </select>
+  </div>
+  <button class="btn btn-primary btn-sm" style="height:32px;">Сохранить</button>
+  <button type="button" class="btn btn-outline-secondary btn-sm" style="height:32px;"
+          onclick="document.getElementById('subscribeForm').style.display='none';">Отмена</button>
+</form>
+{{ subscribe_script() }}
+
+<div class="row g-3 mb-4">
+  <div class="col-lg-6">{{ day_card('Сегодня' + (' · ' + pref[0]|string + 'к ' + pref[1] if pref else ''), preview.today) }}</div>
+  <div class="col-lg-6">{{ day_card('Завтра' + (' · ' + pref[0]|string + 'к ' + pref[1] if pref else ''), preview.tomorrow, 'tomorrow') }}</div>
+</div>
+
+{% if stats %}
 
 <div class="row g-3 mb-4">
   <div class="col-sm-6 col-lg-3">
@@ -2361,7 +2690,8 @@ _DASHBOARD_CONTENT = """
     </div>
   </div>
 </div>
-{% endif %}{# end is_admin stats block #}
+{% endif %}{# end stats #}
+{% endif %}{# end is_admin #}
 """
 
 _UPLOAD_CONTENT = """
@@ -3141,18 +3471,24 @@ _ME_CONTENT = """
 def _render_page(title: str, content_tpl: str, **ctx):
     """Рендерит страницу. Передаёт в шаблон is_admin/is_owner/vk_id/display_name
     из g.user (актуальные роли, без кеша в session)."""
-    content_html = render_template_string(content_tpl, **ctx)
     user = getattr(g, "user", None) or {}
+    # Роли и имя нужны и контенту, и оболочке: раньше они попадали только
+    # в _BASE_TPL, и дашборд админа рисовался как студенческий.
+    role_ctx = {
+        "is_admin": bool(user.get("is_admin")),
+        "is_owner": bool(user.get("is_owner")),
+        "vk_id": user.get("vk_id"),
+        "display_name": user.get("name"),
+    }
+    merged = {**role_ctx, **ctx}
+    content_html = render_template_string(content_tpl, **merged)
     return render_template_string(
         _BASE_TPL,
         page_title=title,
         content=content_html,
         ep=request.endpoint,
-        is_admin=bool(user.get("is_admin")),
-        is_owner=bool(user.get("is_owner")),
-        vk_id=user.get("vk_id"),
-        display_name=user.get("name"),
         current_week=_current_week_label(),
+        **role_ctx,
     )
 
 
@@ -3758,8 +4094,9 @@ def dashboard():
     else:
         preview = _today_tomorrow_preview()
     courses, dirs_by_course = _all_courses_directions()
+    title = "Дашборд" if g.user["is_admin"] else "Сегодня"
     return _render_page(
-        "Дашборд", _DASHBOARD_CONTENT,
+        title, _DASHBOARD_CONTENT,
         stats=_get_stats() if g.user["is_admin"] else None,
         preview=preview,
         pref=pref,
