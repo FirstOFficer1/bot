@@ -1,5 +1,5 @@
 # Telegram-бот с тем же функционалом, что VK (расписание, заметки, напоминания,
-# дедлайны, подписки, вход в панель). Без GPT и SOCKS — только aiogram.
+# дедлайны, подписки, вход в панель). Без GPT.
 #
 #   pip install -r requirements-telegram.txt
 #   python tg_bot.py

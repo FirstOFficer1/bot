@@ -25,7 +25,12 @@ cp .env.example .env                             # и заполнить (см. 
 python -c "import secrets;print(secrets.token_hex(32))"   # → PANEL_SECRET
 
 python web_panel.py                              # панель на http://127.0.0.1:5000
-python -m vkbot                                  # бот, в отдельном терминале
+python -m vkbot                                  # бот VK, в отдельном терминале
+
+# Telegram (тот же функционал):
+# .venv/bin/pip install -r requirements-telegram.txt
+# в .env: TELEGRAM_BOT_TOKEN=... от @BotFather
+# python tg_bot.py
 ```
 
 Минимум, без которого не поднимется:

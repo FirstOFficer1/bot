@@ -1,0 +1,43 @@
+# Telegram-бот (тот же функционал, что VK). Установка:
+#   cp deploy/tgbot.service /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now tgbot
+#   journalctl -u tgbot -f
+#
+# В .env на сервере обязателен TELEGRAM_BOT_TOKEN.
+# Пути как у vkbot.service: /root/vkbot + venv/.
+
+[Unit]
+Description=Telegram schedule bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=vkbot
+Group=vkbot
+WorkingDirectory=/root/vkbot
+ExecStart=/root/vkbot/venv/bin/python tg_bot.py
+Restart=always
+RestartSec=5
+KillSignal=SIGINT
+TimeoutStopSec=20
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tgbot
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+ReadWritePaths=/root/vkbot /var/lib/vkbot
+
+[Install]
+WantedBy=multi-user.target

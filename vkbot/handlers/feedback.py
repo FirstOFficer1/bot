@@ -67,7 +67,13 @@ async def try_handle(bot, message, state, text, uid) -> bool:
 
     store.pop(uid, None)
     await message.answer("✅ Спасибо! Твоё сообщение получено.", keyboard=MAIN_KB)
-    body = f"💬 Новый фидбэк от [id{uid}|id{uid}]:\n\n{text}"
+    from ..ids import is_telegram, to_telegram
+
+    if is_telegram(uid):
+        who = f"Telegram id{to_telegram(uid)}"
+    else:
+        who = f"[id{uid}|id{uid}]"
+    body = f"💬 Новый фидбэк от {who}:\n\n{text}"
     for owner_id in _feedback_recipients():
         try:
             await sender.send(bot, owner_id, body)
