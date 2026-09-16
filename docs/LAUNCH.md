@@ -151,15 +151,10 @@
 
 * **Панель — один процесс.** Отложенные загрузки, прогресс рассылки и кэш `.ics`
   хранятся в памяти. Второй воркер сломает загрузку расписания.
-* **Telegram-бот** (`tg_bot.py` / `tgbot/`) — тот же пайплайн, что у VK
-  (расписание, заметки, напоминания, дедлайны, подписки, вход в панель), без GPT.
-  Пользователи Telegram хранятся как отрицательные `user_id` (`-telegram_id`),
-  чтобы не смешивать платформы в `notes.db`. Нужен `TELEGRAM_BOT_TOKEN` и
-  `pip install -r requirements-telegram.txt`. Воркеры пушей крутятся в этом
-  же процессе; рассылка из панели по-прежнему только во ВКонтакте.
-  На сервере: `TELEGRAM_BOT_TOKEN` (+ опционально `TELEGRAM_BOT_URL=https://t.me/...`
-  для иконки в футере), `cp deploy/tgbot.service /etc/systemd/system/`,
-  `systemctl enable --now tgbot`. `deploy/deploy.sh` перезапускает tgbot, если unit есть.
+* **Telegram-бот** (`tg_bot.py` / `tgbot/`) — код есть, **в проде пока отключён**
+  (только VK). Чтобы снова включить: `TELEGRAM_BOT_TOKEN`,
+  `pip install -r requirements-telegram.txt`, `tgbot.service`, убрать stop/disable
+  из `deploy/deploy.sh`. Опционально `TELEGRAM_BOT_URL` для иконки в футере.
 * **Техподдержка (тикеты).** «Обратная связь» создаёт тикет; специалисты с ролью
   `support` (VK-id, выдача в `/admin/admins`) получают сообщение и отвечают
   «Ответить N» / «Закрыть N». Без support тикеты уходят владельцам. Мультироли:
