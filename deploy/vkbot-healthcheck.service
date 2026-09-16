@@ -1,0 +1,35 @@
+# Разовая проверка /healthz. Запускается таймером vkbot-healthcheck.timer.
+#   cp deploy/vkbot-healthcheck.{service,timer} /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now vkbot-healthcheck.timer
+#   systemctl start vkbot-healthcheck.service   # прогнать сейчас
+#   journalctl -u vkbot-healthcheck -n 30
+
+[Unit]
+Description=Check vkbot /healthz and alert owner via VK
+After=network-online.target vkpanel.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/vkbot
+Environment=PROJECT_DIR=/root/vkbot
+Environment=HEALTHZ_URL=http://127.0.0.1:8080/healthz
+Environment=STATE_DIR=/var/lib/vkbot
+# Токены читает сам скрипт через python-dotenv — EnvironmentFile systemd
+# ломается на кавычках/комментариях в .env (см. vkbot.service).
+ExecStart=/bin/bash /root/vkbot/deploy/healthcheck.sh
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vkbot-healthcheck
+
+# Код 1 при падении healthz — не считаем юнит «failed» навсегда:
+# Type=oneshot + таймер просто повторит через 5 минут.
+SuccessExitStatus=0 1
+
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+# Только state-файл алерта; код и .env читаются из /root/vkbot (ProtectHome
+# даёт read-only доступ к /root).
+ReadWritePaths=/var/lib/vkbot
