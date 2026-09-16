@@ -81,9 +81,18 @@ def init() -> None:
                 code TEXT PRIMARY KEY,
                 user_id INTEGER NOT NULL,
                 created_at TEXT NOT NULL,
-                used INTEGER DEFAULT 0
+                used INTEGER DEFAULT 0,
+                purpose TEXT NOT NULL DEFAULT 'login'
             );
             CREATE INDEX IF NOT EXISTS idx_panel_codes_user ON panel_login_codes(user_id);
+            -- Провалы входа: per-IP и глобальный rate-limit переживают рестарт.
+            CREATE TABLE IF NOT EXISTS login_failures (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ip TEXT NOT NULL,
+                failed_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_login_failures_ip_ts
+                ON login_failures(ip, failed_at);
             CREATE TABLE IF NOT EXISTS panel_users (
                 vk_id INTEGER PRIMARY KEY,
                 role TEXT NOT NULL DEFAULT 'admin',
@@ -192,6 +201,16 @@ def init() -> None:
         }
         if "class_key" not in cols:
             conn.execute("ALTER TABLE sent_class_notifications ADD COLUMN class_key TEXT")
+
+        # purpose у кодов входа: login vs step_up (чтобы OTP входа не годился
+        # для передачи владения). Старые строки получают 'login'.
+        code_cols = {
+            row[1] for row in conn.execute("PRAGMA table_info(panel_login_codes)").fetchall()
+        }
+        if "purpose" not in code_cols:
+            conn.execute(
+                "ALTER TABLE panel_login_codes ADD COLUMN purpose TEXT NOT NULL DEFAULT 'login'"
+            )
 
         # CREATE INDEX IF NOT EXISTS не переопределяет уже существующий индекс,
         # поэтому на старой БД idx_sent_notifs_lookup остался бы висеть на

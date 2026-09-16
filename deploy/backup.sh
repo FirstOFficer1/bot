@@ -19,6 +19,7 @@
 # забрать базу без хвоста транзакций из -wal.
 
 set -euo pipefail
+umask 077
 
 PROJECT_DIR="${PROJECT_DIR:-/root/vkbot}"
 BACKUP_DIR="${1:-${BACKUP_DIR:-/var/backups/vkbot}}"
@@ -53,6 +54,11 @@ if [ -z "$PYTHON" ] || [ ! -x "$PYTHON" ]; then
 fi
 
 mkdir -p "$DEST"
+chmod 700 "$DEST" 2>/dev/null || true
+# Каталог бэкапов тоже закрываем: notes.db содержит персональные данные.
+if [ -d "$BACKUP_DIR" ]; then
+    chmod 700 "$BACKUP_DIR" 2>/dev/null || true
+fi
 
 # Онлайн-копия SQLite средствами самого sqlite3 (модуль есть в stdlib —
 # отдельная утилита sqlite3 на сервере не нужна).

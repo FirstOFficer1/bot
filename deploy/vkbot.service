@@ -1,4 +1,5 @@
 # VK-бот. Установка:
+#   # пользователь vkbot — см. комментарий в vkpanel.service
 #   cp deploy/vkbot.service /etc/systemd/system/
 #   systemctl daemon-reload && systemctl enable --now vkbot
 #   journalctl -u vkbot -f
@@ -14,6 +15,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+User=vkbot
+Group=vkbot
 WorkingDirectory=/root/vkbot
 # .env читает сам процесс через python-dotenv — из рабочего каталога.
 # EnvironmentFile здесь не нужен и вреден: systemd разбирает файл по своим
@@ -30,15 +33,21 @@ StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=vkbot
 
-# Минимальная изоляция
 NoNewPrivileges=true
 PrivateTmp=true
-ProtectSystem=full
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
 # Проект лежит в /root, а ProtectHome делает его доступным только на чтение —
 # базы открываются на запись даже для чтения (SQLite в WAL создаёт -wal и -shm),
 # и без ReadWritePaths ниже бот падал бы на «unable to open database file».
-ProtectHome=read-only
-ReadWritePaths=/root/vkbot
+ReadWritePaths=/root/vkbot /var/lib/vkbot
 
 [Install]
 WantedBy=multi-user.target

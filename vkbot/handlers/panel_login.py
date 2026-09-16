@@ -1,14 +1,19 @@
-"""Хендлер: выдача кода для входа в веб-панель администраторам.
+"""Хендлер: выдача кода для входа в веб-панель и step-up подтверждений.
 
-Любой может попросить код, но войти в админку через него смогут только VK ID
-из ADMIN_VK_IDS (это уже проверяет web_panel). Так что код безопасно выдавать
-кому угодно — он залогинит юзера в его собственный /me.
+Любой может попросить код, но войти в админку через него смогут только те,
+кому панель выдала права. Код безопасно выдавать кому угодно — он залогинит
+юзера в его собственный /me.
+
+Два назначения:
+* /login — код входа (purpose=login);
+* /confirm — код подтверждения опасных операций в панели (purpose=step_up).
+  Код входа намеренно не подходит для step-up: иначе перехваченный OTP
+  сразу открывал бы передачу владения.
 """
 
 from __future__ import annotations
 
 import asyncio
-
 import os
 import re
 
@@ -38,22 +43,42 @@ def _is_panel_admin(uid: int) -> bool:
         return False
 
 
-_TRIGGERS = {"🔑 Войти в панель", "/login", "вход в панель", "войти в панель"}
+_LOGIN_TRIGGERS = {"🔑 Войти в панель", "/login", "вход в панель", "войти в панель"}
+_CONFIRM_TRIGGERS = {
+    "🔐 Код подтверждения", "/confirm", "код подтверждения", "подтверждение",
+}
 
 
 async def try_handle(_bot, message, _state, text, uid) -> bool:
-    if (text or "").strip().lower() not in {t.lower() for t in _TRIGGERS}:
+    raw = (text or "").strip()
+    low = raw.lower()
+
+    if low in {t.lower() for t in _CONFIRM_TRIGGERS}:
+        code, ttl = await asyncio.to_thread(
+            panel_codes.issue, uid, purpose=panel_codes.PURPOSE_STEP_UP,
+        )
+        await message.answer(
+            "🔐 Код подтверждения для панели\n\n"
+            f"⏱ Действителен {ttl} мин., одноразовый.\n"
+            "Нужен для опасных операций: передача владения, выдача админа, "
+            "рассылка.\n\n"
+            "Код входа (/login) сюда не подходит — это другой код.\n"
+            "⬇ Код — отдельным сообщением ниже.",
+            keyboard=MAIN_KB,
+        )
+        await message.answer(code)
+        return True
+
+    if low not in {t.lower() for t in _LOGIN_TRIGGERS}:
         return False
 
     panel_url = os.getenv("PANEL_BASE_URL", "").rstrip("/") or "https://elschedule.ru"
-    code, ttl = await asyncio.to_thread(panel_codes.issue, uid)
-    # Права бывают двух видов: из env (владельцы) и выданные в панели
-    # (panel_users). Раньше учитывались только первые, и админ, которому выдали
-    # доступ через панель, читал в боте, что он обычный пользователь.
+    code, ttl = await asyncio.to_thread(
+        panel_codes.issue, uid, purpose=panel_codes.PURPOSE_LOGIN,
+    )
     is_admin = uid in _admin_ids() or await asyncio.to_thread(_is_panel_admin, uid)
     role = "администратор" if is_admin else "обычный пользователь"
 
-    # 1) Информационное сообщение
     await message.answer(
         f"🔑 Код для входа в веб-панель\n\n"
         f"⏱ Действителен {ttl} мин., одноразовый.\n"
@@ -63,8 +88,6 @@ async def try_handle(_bot, message, _state, text, uid) -> bool:
         f"Зажми его → «Скопировать».",
         keyboard=MAIN_KB,
     )
-    # 2) Сам код — отдельным сообщением, чтобы long-press копировал ровно 6 цифр
-    # без префиксов/пояснений/пробелов.
     await message.answer(code)
     return True
 
@@ -73,12 +96,14 @@ async def try_handle(_bot, message, _state, text, uid) -> bool:
 # в чат — бот на это отвечал «Не понимаю эту команду». Подсказываем, куда его
 # на самом деле вводить. Хендлер стоит в конце пайплайна, поэтому не перехватит
 # цифры, которых ждёт активный диалог (номер заметки, время напоминания).
-_SIX_DIGITS_RE = re.compile(r"^\D{0,2}(\d{6})\D{0,2}$")
+_CODE_RE = re.compile(
+    rf"^\D{{0,2}}(\d{{{panel_codes.CODE_LEN}}})\D{{0,2}}$"
+)
 
 
 async def try_code_hint(_bot, message, _state, text, uid) -> bool:
     """Пользователь прислал код входа в чат вместо сайта."""
-    if not _SIX_DIGITS_RE.match((text or "").strip()):
+    if not _CODE_RE.match((text or "").strip()):
         return False
     if not await asyncio.to_thread(panel_codes.has_recent_code, uid):
         return False

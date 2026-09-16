@@ -45,7 +45,7 @@ def test_code_still_works_in_the_simple_case():
 
 def test_wrong_code_is_rejected():
     panel_codes.issue(UID)
-    assert panel_codes.verify("000000") is None
+    assert panel_codes.verify("00000000") is None
 
 
 # ── Токен отложенной загрузки ────────────────────────────────────────────────

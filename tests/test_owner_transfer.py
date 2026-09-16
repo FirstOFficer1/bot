@@ -38,7 +38,7 @@ def _login(client, vk_id: int):
 
 
 def _fresh_code(vk_id: int) -> str:
-    code, _ttl = panel_codes.issue(vk_id)
+    code, _ttl = panel_codes.issue(vk_id, purpose=panel_codes.PURPOSE_STEP_UP)
     return code
 
 
@@ -80,7 +80,15 @@ def test_transfer_requires_code(client):
 
 def test_transfer_rejects_wrong_code(client):
     _login(client, OWNER)
-    _grant_owner(client, code="000000")
+    _grant_owner(client, code="00000000")
+    assert not panel_users.is_owner(SUCCESSOR)
+
+
+def test_login_code_does_not_work_as_step_up(client):
+    """Код входа намеренно не годится для передачи владения."""
+    _login(client, OWNER)
+    login_code, _ = panel_codes.issue(OWNER, purpose=panel_codes.PURPOSE_LOGIN)
+    _grant_owner(client, code=login_code)
     assert not panel_users.is_owner(SUCCESSOR)
 
 

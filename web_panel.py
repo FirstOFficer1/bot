@@ -87,15 +87,23 @@ def _too_large(_e):
 def _csrf_error(e):
     return ("CSRF token missing or invalid. Reload the page and try again.", 400)
 
-_panel_secret = os.getenv("PANEL_SECRET")
-if not _panel_secret:
-    raise SystemExit("FATAL: PANEL_SECRET env var is required (set 32+ random hex chars)")
+_panel_secret = os.getenv("PANEL_SECRET") or ""
+_WEAK_SECRETS = frozenset({
+    "secret", "password", "changeme", "panel", "vkbot", "test", "123456",
+    "panel_secret", "elschedule",
+})
+if len(_panel_secret.encode("utf-8")) < 32 or _panel_secret.strip().lower() in _WEAK_SECRETS:
+    raise SystemExit(
+        "FATAL: PANEL_SECRET must be at least 32 random bytes "
+        "(python -c \"import secrets;print(secrets.token_hex(32))\")"
+    )
 app.secret_key = _panel_secret
 
-# Persistent sessions: cookie живёт 30 дней, не сбрасывается при закрытии браузера
+# Flask-сессия — только fallback на первый редирект после /login/code.
+# Долгоживущая авторизация — RM-кука (см. panel_remember).
 import datetime as _dt
 
-app.config["PERMANENT_SESSION_LIFETIME"] = _dt.timedelta(days=365)
+app.config["PERMANENT_SESSION_LIFETIME"] = _dt.timedelta(days=14)
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 # SAMESITE=None требует Secure (иначе браузер молча дропнет cookie).
 # На локалке без https используем Lax (Mini App не заработает локально — ок).
@@ -122,12 +130,15 @@ if _TRUSTED_PROXIES:
 
 @app.after_request
 def _security_headers(resp):
+    # Bootstrap и шрифты — с нашего origin (/static). 'unsafe-inline' остаётся
+    # для VKWebAppInit (должен уйти до любой сетевой загрузки); без CDN XSS
+    # хотя бы не сможет подтянуть произвольный npm-пакет с jsdelivr.
     resp.headers.setdefault("Content-Security-Policy",
         "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
-        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; "
+        "script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
         "font-src 'self' https://fonts.gstatic.com; "
-        "img-src 'self' data: https:; "
+        "img-src 'self' data:; "
         "connect-src 'self'; "
         "frame-ancestors https://vk.com https://*.vk.com https://vk.ru https://*.vk.ru; "
         "base-uri 'self'; "
@@ -454,11 +465,10 @@ SUPPORT_URL = os.getenv("SUPPORT_URL") or (
 VK_APP_ID = _bot_config.int_env("VK_APP_ID")
 
 # Насколько старый запуск ещё пускаем внутрь. Подпись сама по себе не истекает,
-# а launch-URL вместе с ней остаётся в истории браузера и на скриншотах,
-# поэтому ограничиваем окно. 12 часов — компромисс: сессия Mini App живёт
-# долго (куки в iframe режут, подпись часто остаётся единственным
-# доказательством личности), но сутки давали слишком широкое окно replay.
-VK_LAUNCH_MAX_AGE_SEC = _bot_config.int_env("VK_LAUNCH_MAX_AGE_SEC", 12 * 3600)
+# а launch-URL остаётся в истории браузера, скриншотах и access-логах —
+# поэтому окно короткое. VK перевыдаёт параметры при каждом открытии Mini App;
+# 2 часа хватает на сессию в iframe без cookies.
+VK_LAUNCH_MAX_AGE_SEC = _bot_config.int_env("VK_LAUNCH_MAX_AGE_SEC", 2 * 3600)
 
 
 def vk_launch_user_id(args, secret: str, *, now: float | None = None) -> int | None:
@@ -496,13 +506,21 @@ def vk_launch_user_id(args, secret: str, *, now: float | None = None) -> int | N
         uid = int(args.get("vk_user_id", 0))
     except (TypeError, ValueError):
         return None
-    return uid or None
+    if not uid:
+        return None
+    # После «выйти со всех» старая подпись из логов не должна снова пускать.
+    if not panel_sessions.launch_is_live(uid, args.get("vk_ts")):
+        return None
+    return uid
 
 
 # Подписи уже виденных запусков: только чтобы не дублировать запись о входе.
 # Живёт в памяти процесса — панель работает строго в одном (см. заголовок файла).
 _LAUNCH_SEEN: dict[str, float] = {}
 _LAUNCH_SEEN_TTL_SEC = 3600
+# Throttle для vk.sign_invalid: без него ?sign=x заливает audit_log.
+_SIGN_INVALID_HIT: dict[str, float] = {}
+_SIGN_INVALID_TTL_SEC = 60
 
 
 def _launch_is_new(sign: str) -> bool:
@@ -516,6 +534,19 @@ def _launch_is_new(sign: str) -> bool:
     if sign in _LAUNCH_SEEN:
         return False
     _LAUNCH_SEEN[sign] = now
+    return True
+
+
+def _should_audit_bad_sign(ip: str) -> bool:
+    """Не чаще раза в минуту на IP — иначе audit_log забивается флудом."""
+    now = time.time()
+    last = _SIGN_INVALID_HIT.get(ip, 0.0)
+    if now - last < _SIGN_INVALID_TTL_SEC:
+        return False
+    _SIGN_INVALID_HIT[ip] = now
+    if len(_SIGN_INVALID_HIT) > 5000:
+        for stale in [k for k, t in _SIGN_INVALID_HIT.items() if now - t > 300]:
+            _SIGN_INVALID_HIT.pop(stale, None)
     return True
 
 
@@ -570,8 +601,7 @@ def _check_vk_sign():
     iframe браузеры блокируют всё чаще, и тогда launch-параметры остаются
     единственным, чем пользователь может себя подтвердить.
 
-    Подделки по-прежнему пишутся в аудит: это и наблюдаемость, и доказательство
-    для модерации VK, что приложение launch-параметры действительно проверяет.
+    Подделки пишутся в аудит с throttle: иначе ?sign=x заливает журнал.
     """
     g.vk_sign_ok = False
     if "sign" not in request.args:
@@ -580,30 +610,60 @@ def _check_vk_sign():
     uid = vk_launch_user_id(request.args, secret)
     g.vk_sign_ok = uid is not None
     if uid is None:
-        audit.log(None, "vk.sign_invalid", _client_ip(), request.path)
+        if _should_audit_bad_sign(_client_ip()):
+            audit.log(None, "vk.sign_invalid", _client_ip(), request.path)
         return
 
     g.vk_launch_uid = uid
 
-    # Сессию ставим всегда (это дёшево и идемпотентно), а вот запись в аудит и
-    # отметку о посещении — один раз на запуск. Если браузер режет куки в
-    # iframe, сессия не переживёт запрос, и без этой защиты каждый запрос
-    # писал бы «вход» в журнал.
+    # Login-CSRF: чужая валидная подпись не должна молча переписывать чужую
+    # сессию. RM-кука побеждает в _load_current_user, а вот Flask-сессию
+    # раньше чистили и подменяли — жертва оказывалась залогинена под атакующим.
+    existing = session.get("vk_id")
+    if existing and int(existing) != uid:
+        return
+
+    # Сессию ставим только если её ещё нет или она того же uid. permanent=False:
+    # launch-URL не должен выдавать годовую куку; долгоживущий вход — через RM
+    # после OTP. В iframe без cookies следующий запрос снова принесёт sign.
     if session.get("vk_id") != uid:
         session.clear()
         session["logged_in"] = True
         session["vk_id"] = uid
         session["auth_at"] = panel_sessions.issued_now()
-        session.permanent = True
+        session.permanent = False
 
     if _launch_is_new(request.args.get("sign", "")):
         seen_users.touch(uid)
-        # Платформу пишем не для красоты: когда пользователь говорит «с телефона
-        # не пускает», журнал — единственный способ узнать, дошёл ли запуск до
-        # нас вообще. Пустого mobile_* в журнале достаточно, чтобы не искать
-        # причину у себя: значит, VK не открыл приложение.
         platform = request.args.get("vk_platform", "?")[:32]
         audit.log(uid, "auth.login", "via VK Mini App", f"seamless, {platform}")
+
+
+@app.before_request
+def _strip_launch_query():
+    """После успешного launch-входа убираем sign из URL (история/рефереры).
+
+    Только когда есть RM-кука: она переживёт редирект. В iframe без cookies
+    query — единственное доказательство личности, срезать его нельзя (иначе
+    после 303 пользователь окажется разлогинен).
+    """
+    if "sign" not in request.args:
+        return
+    if request.method not in ("GET", "HEAD"):
+        return
+    if not getattr(g, "vk_sign_ok", False):
+        return
+    if not request.cookies.get(_REMEMBER_COOKIE):
+        return
+    clean = {k: v for k, v in request.args.items()
+             if not (k.startswith("vk_") or k == "sign")}
+    if len(clean) == len(request.args):
+        return
+    from urllib.parse import urlencode
+    target = request.path
+    if clean:
+        target = f"{target}?{urlencode(clean)}"
+    return redirect(target, code=303)
 
 
 @app.before_request
@@ -927,7 +987,7 @@ _BASE_TPL = """
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+  <link rel="stylesheet" href="/static/bootstrap.min.css">
   <style>
     /* ============================================================
        Design tokens (from schedule-site design system)
@@ -1718,7 +1778,7 @@ _BASE_TPL = """
   </main>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script src="/static/bootstrap.bundle.min.js"></script>
 <script>
 // Подтверждения вешаются через data-confirm, а не inline-обработчиком.
 // Причина: в inline-обработчике HTML-экранирования недостаточно — браузер
@@ -1923,13 +1983,13 @@ _LOGIN_TPL = """
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <label class="label" for="code">Код из бота</label>
       <input id="code" type="text" name="code" class="code-input"
-             placeholder="······" maxlength="6" minlength="6"
-             pattern="\\d{6}" inputmode="numeric" autocomplete="off"
+             placeholder="········" maxlength="8" minlength="8"
+             pattern="\\d{8}" inputmode="numeric" autocomplete="off"
              autofocus required>
       <label style="display:flex;align-items:center;gap:8px;margin:14px 4px 0;font-size:13.5px;color:var(--text-2);cursor:pointer;user-select:none;">
         <input type="checkbox" name="remember" value="1" checked
                style="width:16px;height:16px;accent-color:var(--accent);cursor:pointer;">
-        Запомнить меня на этом устройстве (1 год)
+        Запомнить меня на этом устройстве (до полугода при активности)
       </label>
       <button class="submit" type="submit">Войти →</button>
     </form>
@@ -3098,13 +3158,27 @@ def _render_page(title: str, content_tpl: str, **ctx):
 
 # ── Маршруты: авторизация ─────────────────────────────────────────────────────
 
+_LOGIN_ERRORS = {
+    "rate_limited": "Слишком много неудачных попыток. Подожди 10 минут.",
+    "global_lock": "Система временно заблокирована. Подожди 10 минут.",
+    "bad_code": "Неверный или истёкший код.",
+    "logout_failed": (
+        "Это устройство вышло, но завершить сеансы на остальных не удалось. "
+        "Повтори попытку."
+    ),
+}
+
+
 @app.route("/login", methods=["GET"])
 def login():
     # Из VK Mini App пользователь уже опознан по подписанным launch-параметрам
     # (правила VK Mini Apps, п. 1.1.2): показывать ему форму с кодом нельзя.
     if getattr(g, "user", None):
         return redirect(url_for("dashboard"))
-    error = request.args.get("error")
+    # Код ошибки из whitelist — не свободный текст из query (фишинг через
+    # «Введите код на t.me/…» в официальной рамке страницы).
+    err_key = (request.args.get("error") or "").strip()
+    error = _LOGIN_ERRORS.get(err_key)
     return render_template_string(_LOGIN_TPL, error=error)
 
 
@@ -3477,28 +3551,24 @@ def login_code():
     """
     code = _normalize_code(request.form.get("code"))
     ip = _client_ip()
-    # Сначала пробуем валидировать код — валидный код ВСЕГДА пускает,
-    # даже при global/per-IP lock. Иначе ботнет может надолго забанить
-    # реального админа, заполнив счётчик неудач.
-    uid = panel_codes.verify(code)
+    # Per-IP лимит — ДО verify: иначе заблокированный IP продолжает перебирать
+    # коды в БД, и угаданный всё равно пускает. Глобальный замок — после
+    # неудачи: валидный код реального админа не должен отваливаться из-за
+    # ботнета с других адресов.
+    if panel_codes.is_rate_limited(ip):
+        audit.log(None, "auth.rate_limited", ip, "")
+        return redirect(url_for("login", error="rate_limited"))
+    uid = panel_codes.verify(code, purpose=panel_codes.PURPOSE_LOGIN)
     if not uid:
-        # Только теперь проверяем лимиты, чтобы не подсказывать злоумышленнику,
-        # что код был правильным до бана.
         if panel_codes.is_globally_locked():
             audit.log(None, "auth.global_lock", ip, "")
-            return redirect(url_for("login", error="Система временно заблокирована. Подожди 10 минут."))
-        if panel_codes.is_rate_limited(ip):
-            audit.log(None, "auth.rate_limited", ip, "")
-            return redirect(url_for("login", error="Слишком много неудачных попыток. Подожди 10 минут."))
+            return redirect(url_for("login", error="global_lock"))
         panel_codes.record_failure(ip)
-        return redirect(url_for("login", error="Неверный или истёкший код."))
+        return redirect(url_for("login", error="bad_code"))
     seen_users.touch(uid)
     audit.log(uid, "auth.login", f"id{uid}", "via OTP code")
     remember = (request.form.get("remember", "1") == "1")
     resp = redirect(url_for("dashboard"))
-    # Flask-сессия — для первого редиректа (кука ещё не вернётся обратно).
-    # permanent только при «запомнить меня»: иначе сессия живёт до закрытия
-    # браузера, как пользователь и просил.
     session.permanent = bool(remember)
     session["logged_in"] = True
     session["vk_id"] = uid
@@ -3558,10 +3628,7 @@ def logout_all():
     if revoked:
         resp = redirect(url_for("login"))
     else:
-        resp = redirect(url_for(
-            "login",
-            error="Это устройство вышло, но завершить сеансы на остальных не удалось. Повтори попытку.",
-        ))
+        resp = redirect(url_for("login", error="logout_failed"))
     _clear_remember_cookie(resp)
     return resp
 
@@ -3825,40 +3892,47 @@ _BROADCAST_TEXT = (
 
 
 
-# Excel upload validation: ext + magic bytes (защита от подмены .xlsx произвольным файлом).
-_XLSX_MAGIC = bytes.fromhex("504b0304")          # zip-контейнер (xlsx/xlsm)
-_XLS_MAGIC  = bytes.fromhex("d0cf11e0")  # OLE2-контейнер (старый xls)
-_ALLOWED_EXTS = {".xlsx", ".xls", ".xlsm"}
+# Excel upload validation: ext + magic bytes + zip-bomb limits.
+_XLSX_MAGIC = bytes.fromhex("504b0304")  # ZIP / OOXML
+_ALLOWED_EXTS = {".xlsx"}
 
 def _validate_excel_upload(f) -> str:
-    """Возвращает '' если ок, иначе текст ошибки. Проверяет:
-    1) расширение в whitelist; 2) magic bytes; 3) для xlsx — наличие
-    [Content_Types].xml внутри zip (отсекает произвольные zip-payload'ы)."""
+    """Возвращает '' если ок, иначе текст ошибки.
+
+    Проверяет расширение, magic bytes и структуру zip: число записей,
+    суммарный распакованный размер и коэффициент сжатия (zip-бомба).
+    .xlsm/.xls не принимаем — макросы не нужны, старый OLE openpyxl не читает.
+    """
     if not f or not f.filename:
         return "Файл не выбран."
     ext = os.path.splitext(f.filename)[1].lower()
     if ext not in _ALLOWED_EXTS:
-        return f"Неподдерживаемое расширение {ext or '?'}. Нужен .xlsx/.xls."
+        return f"Неподдерживаемое расширение {ext or '?'}. Нужен .xlsx."
     head = f.stream.read(8)
     f.stream.seek(0)
-    if head.startswith(_XLS_MAGIC):
-        return ""  # старый OLE2 формат, magic совпал — ок
     if not head.startswith(_XLSX_MAGIC):
         return "Файл не похож на Excel (неверный заголовок)."
-    # Для zip-формата проверяем, что это реально Office Open XML, а не
-    # произвольный zip-архив с .xlsx-расширением.
     import zipfile
     import io
     try:
         data = f.stream.read()
         f.stream.seek(0)
         with zipfile.ZipFile(io.BytesIO(data)) as z:
-            names = set(z.namelist())
+            infos = z.infolist()
+            if len(infos) > 200:
+                return "Слишком много записей внутри архива."
+            names = {zi.filename for zi in infos}
             if "[Content_Types].xml" not in names:
                 return "Файл — zip-архив, но не Excel (нет [Content_Types].xml)."
-            # Поверхностный sanity-check на размер — отсекает zip-bombs
-            if any(zi.file_size > 50_000_000 for zi in z.infolist()):
-                return "Подозрительно крупная запись внутри архива."
+            total_uncompressed = 0
+            for zi in infos:
+                if zi.file_size > 50_000_000:
+                    return "Подозрительно крупная запись внутри архива."
+                total_uncompressed += zi.file_size
+                if zi.compress_size > 0 and zi.file_size / zi.compress_size > 100:
+                    return "Подозрительный коэффициент сжатия (возможна zip-бомба)."
+            if total_uncompressed > 200_000_000:
+                return "Суммарный размер распакованных данных слишком велик."
     except zipfile.BadZipFile:
         return "Файл не является валидным zip/xlsx."
     except Exception:
@@ -4112,7 +4186,11 @@ def api_schedule_commit():
 def api_schedule_versions():
     if not _check_api_token():
         return jsonify({"error": "unauthorized"}), 401
-    return jsonify(schedule_loader.list_versions())
+    # file_path — внутренний путь на диске, наружу не отдаём.
+    return jsonify([
+        {k: v for k, v in row.items() if k != "file_path"}
+        for row in schedule_loader.list_versions()
+    ])
 
 
 @app.route("/api/schedule/rollback/<int:version_id>", methods=["POST"])
@@ -4692,7 +4770,7 @@ _ADMINS_CONTENT = """
   <div class="card-body">
     <form method="post" action="{{ url_for('admin_grant') }}" class="row g-2 align-items-center">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <div class="col-sm-8 col-md-6">
+      <div class="col-sm-6 col-md-5">
         <input aria-label="VK ID или имя" type="text" name="query" class="form-control" required autocomplete="off"
                list="grantUsers"
                placeholder="VK ID, vk.com/id…, или имя из бота">
@@ -4703,12 +4781,18 @@ _ADMINS_CONTENT = """
         </datalist>
       </div>
       <div class="col-auto">
+        <input aria-label="Код подтверждения" type="text" name="code" class="form-control" required
+               inputmode="numeric" pattern="[0-9]*" maxlength="8" minlength="8"
+               autocomplete="off" placeholder="код /confirm" style="max-width:11rem;">
+      </div>
+      <div class="col-auto">
         <button class="btn btn-success">🛡️ Выдать админа</button>
       </div>
     </form>
     <div class="form-text small mt-2">
       Можно вписать VK ID (<code>123456</code>), ссылку <code>vk.com/id123456</code> или
       имя пользователя из бота — поиск с автодополнением.
+      Операция подтверждается кодом из бота («🔐 Код подтверждения» / <code>/confirm</code>).
     </div>
   </div>
 </div>
@@ -4724,8 +4808,8 @@ _ADMINS_CONTENT = """
       </div>
       <div class="col-auto">
         <input aria-label="Одноразовый код из бота" type="text" name="code" class="form-control" required
-               inputmode="numeric" pattern="[0-9]*" maxlength="6" minlength="6"
-               autocomplete="off" placeholder="код из бота" style="max-width:11rem;">
+               inputmode="numeric" pattern="[0-9]*" maxlength="8" minlength="8"
+               autocomplete="off" placeholder="код /confirm" style="max-width:11rem;">
       </div>
       <div class="col-auto">
         <button class="btn btn-danger">👑 Передать владение</button>
@@ -4733,8 +4817,9 @@ _ADMINS_CONTENT = """
     </form>
     <div class="form-text small mt-2">
       Владелец может всё, включая выдачу и снятие админов и владельцев.
-      Операция подтверждается одноразовым кодом: запросите его в боте
-      («🔑 Войти в панель») и введите сюда — украденной сессии кода не хватит.
+      Операция подтверждается кодом из бота («🔐 Код подтверждения» /
+      <code>/confirm</code>) — код входа (/login) сюда не подходит.
+      Украденной сессии этого кода не хватит.
       <br>
       Ваше собственное владение задано в <code>.env</code> и через панель не снимается:
       что бы ни произошло здесь, доступ у вас остаётся. Полностью уйти можно, выдав
@@ -4781,8 +4866,8 @@ _ADMINS_CONTENT = """
                   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                   <input type="hidden" name="vk_id" value="{{ o.vk_id }}">
                   <input aria-label="Код подтверждения" type="text" name="code" required class="form-control form-control-sm"
-                         inputmode="numeric" pattern="[0-9]*" maxlength="6" minlength="6"
-                         autocomplete="off" placeholder="код" style="max-width:6.5rem;">
+                         inputmode="numeric" pattern="[0-9]*" maxlength="8" minlength="8"
+                         autocomplete="off" placeholder="код" style="max-width:7rem;">
                   <button class="btn btn-sm btn-outline-danger">👑 Снять владение</button>
                 </form>
               {% endif %}
@@ -4799,10 +4884,15 @@ _ADMINS_CONTENT = """
             <td><span class="badge bg-success">admin</span></td>
             <td class="d-none d-md-table-cell text-muted small">{{ a.added_at }}</td>
             <td class="text-end">
-              <form method="post" action="{{ url_for('admin_revoke') }}" class="d-inline"
+              <form method="post" action="{{ url_for('admin_revoke') }}"
+                    class="d-inline-flex gap-1 align-items-center justify-content-end"
                     data-confirm="Убрать админа у {{ a.name or a.vk_id }}?">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <input type="hidden" name="vk_id" value="{{ a.vk_id }}">
+                <input aria-label="Код подтверждения" type="text" name="code" required
+                       class="form-control form-control-sm"
+                       inputmode="numeric" pattern="[0-9]*" maxlength="8" minlength="8"
+                       autocomplete="off" placeholder="код" style="max-width:7rem;">
                 <button class="btn btn-sm btn-outline-warning">✖ Убрать</button>
               </form>
             </td>
@@ -4901,10 +4991,11 @@ def _resolve_grant_target(raw: str) -> tuple[int | None, str, str | None]:
 @owner_required
 def admin_grant():
     next_url = _safe_next(request.form.get("next"), url_for("admins_page"))
+    actor = _current_vk_id() or 0
     raw_vk = (request.form.get("vk_id") or "").strip()
-    raw_query = (request.form.get("query") or "").strip()  # объединённое поле «ID или имя»
+    raw_query = (request.form.get("query") or "").strip()
 
-    # Если пришло объединённое поле — резолвим
+    # Разбор получателя ДО step-up: код одноразовый, опечатка не должна его жечь.
     if raw_query and not raw_vk.isdigit():
         vk_id, name, err = _resolve_grant_target(raw_query)
         if err or vk_id is None:
@@ -4920,8 +5011,17 @@ def admin_grant():
 
     if vk_id in _all_owner_ids():
         return redirect(_with_flash(next_url, "Владелец уже имеет все права.", "info"))
-    panel_users.grant(vk_id, granted_by=_current_vk_id() or 0, name=name)
-    audit.log(_current_vk_id(), "admin.grant", f"id{vk_id}", name)
+
+    err = _step_up_error(actor)
+    if err:
+        return redirect(_with_flash(next_url, err, "danger"))
+
+    panel_users.grant(vk_id, granted_by=actor, name=name)
+    audit.log(actor, "admin.grant", f"id{vk_id}", name)
+    _notify_owners(
+        f"🛡️ Панель: id{actor} выдал права админа пользователю {name} (id{vk_id}).\n"
+        f"Если это не вы — снимите права на странице «Управление админами»."
+    )
     return redirect(_with_flash(next_url, f"✅ {name} (id{vk_id}) теперь админ", "success"))
 
 
@@ -4929,6 +5029,7 @@ def admin_grant():
 @owner_required
 def admin_revoke():
     next_url = _safe_next(request.form.get("next"), url_for("admins_page"))
+    actor = _current_vk_id() or 0
     try:
         vk_id = int(request.form.get("vk_id") or 0)
     except (TypeError, ValueError):
@@ -4941,9 +5042,13 @@ def admin_revoke():
         return redirect(
             _with_flash(next_url, "Сначала снимите владение, потом права админа.", "danger")
         )
+    err = _step_up_error(actor)
+    if err:
+        return redirect(_with_flash(next_url, err, "danger"))
     panel_users.revoke(vk_id)
     name = vk_names.resolve_one(vk_id)
-    audit.log(_current_vk_id(), "admin.revoke", f"id{vk_id}", name)
+    audit.log(actor, "admin.revoke", f"id{vk_id}", name)
+    _notify_owners(f"🛡️ Панель: id{actor} снял права админа с {name} (id{vk_id}).")
     return redirect(_with_flash(next_url, f"✖ {name} (id{vk_id}) снят с админов", "success"))
 
 
@@ -4961,20 +5066,28 @@ def admin_revoke():
 
 
 def _step_up_error(actor_uid: int) -> str | None:
-    """Проверяет код подтверждения. Возвращает текст ошибки или None, если всё чисто."""
+    """Проверяет код подтверждения (purpose=step_up). Ошибка или None."""
     code = _normalize_code(request.form.get("code"))
     ip = _client_ip()
     if not code:
-        return "Нужен код из бота: операции с владением подтверждаются отдельно."
-    if panel_codes.is_globally_locked() or panel_codes.is_rate_limited(ip):
+        return (
+            "Нужен код подтверждения из бота («🔐 Код подтверждения» / /confirm). "
+            "Код входа сюда не подходит."
+        )
+    if panel_codes.is_rate_limited(ip):
         audit.log(actor_uid, "auth.step_up_rate_limited", ip, "")
         return "Слишком много неудачных попыток. Подождите 10 минут."
-    verified = panel_codes.verify(code)
+    verified = panel_codes.verify(code, purpose=panel_codes.PURPOSE_STEP_UP)
     if verified is None:
+        if panel_codes.is_globally_locked():
+            audit.log(actor_uid, "auth.step_up_rate_limited", ip, "global")
+            return "Слишком много неудачных попыток. Подождите 10 минут."
         panel_codes.record_failure(ip)
-        return "Код неверен или истёк. Запросите новый в боте: «🔑 Войти в панель»."
+        return (
+            "Код неверен или истёк. Запросите новый в боте: "
+            "«🔐 Код подтверждения»."
+        )
     if verified != actor_uid:
-        # Код чужого аккаунта — либо ошибка, либо попытка обойти подтверждение.
         panel_codes.record_failure(ip)
         audit.log(actor_uid, "auth.step_up_foreign_code", f"id{verified}", "")
         return "Этот код выдан другому аккаунту."
@@ -5867,6 +5980,15 @@ _BROADCAST_CONTENT = """
               style="font-family:var(--font);resize:vertical;">{{ default_text }}</textarea>
     <div class="form-text small">Максимум 4096 символов. Эмодзи и переносы строк работают.</div>
   </div>
+  <div>
+    <label class="form-label" for="bc-code">Код подтверждения из бота</label>
+    <input id="bc-code" type="text" name="code" class="form-control" required
+           inputmode="numeric" pattern="[0-9]*" maxlength="8" minlength="8"
+           autocomplete="off" placeholder="🔐 /confirm" style="max-width:14rem;">
+    <div class="form-text small">
+      Запросите в боте «🔐 Код подтверждения». Код входа не подходит.
+    </div>
+  </div>
   <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
     <button class="btn btn-primary" style="height:38px;">📤 Отправить всем подписчикам</button>
     <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary" style="height:38px;display:inline-flex;align-items:center;">Отмена</a>
@@ -6004,10 +6126,14 @@ def broadcast_send():
     text = (request.form.get("text") or "").strip()
     if len(text) < 3:
         return redirect(_with_flash(url_for("broadcast_page"), "Слишком короткое сообщение", "danger"))
+    actor = _current_vk_id() or 0
+    err = _step_up_error(actor)
+    if err:
+        return redirect(_with_flash(url_for("broadcast_page"), err, "danger"))
     uids = notifier.subscribed_uids()
     if not uids:
         return redirect(_with_flash(url_for("broadcast_page"), "Нет активных подписчиков", "danger"))
-    if not _start_broadcast(text, uids, _current_vk_id()):
+    if not _start_broadcast(text, uids, actor):
         return redirect(_with_flash(
             url_for("broadcast_page"),
             "Рассылка уже идёт — дождись её завершения", "danger",

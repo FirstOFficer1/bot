@@ -23,7 +23,7 @@ os.environ["SCHEDULE_RELOAD_MARKER"] = str(_TMP / ".schedule_reload")
 # Пустой токен: vk_names/notifier тогда не ходят в сеть.
 os.environ["VK_TOKEN"] = ""
 os.environ["ADMIN_ID"] = "1001"
-os.environ["PANEL_SECRET"] = "test-secret-not-for-production"
+os.environ["PANEL_SECRET"] = "test-secret-not-for-production-32b"
 os.environ["PANEL_BASE_URL"] = "http://127.0.0.1:5000"
 os.environ["PANEL_TRUSTED_PROXIES"] = "0"
 os.environ["UPLOAD_API_TOKEN"] = "test-api-token"
@@ -57,6 +57,7 @@ def _clean_tables():
             "seen_users", "audit_log",
             "user_consents",
             "worker_heartbeats",
+            "login_failures",
         ):
             conn.execute(f"DELETE FROM {table}")
 

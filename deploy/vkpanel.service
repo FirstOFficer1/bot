@@ -1,4 +1,10 @@
 # Веб-панель. Установка:
+#   # один раз: пользователь без shell, данные отдельно от кода
+#   useradd --system --home /var/lib/vkbot --shell /usr/sbin/nologin vkbot
+#   mkdir -p /var/lib/vkbot && chown vkbot:vkbot /var/lib/vkbot
+#   chown -R root:vkbot /root/vkbot && chmod -R g+rX /root/vkbot
+#   chown vkbot:vkbot /root/vkbot/*.db /root/vkbot/schedule_versions 2>/dev/null || true
+#   chmod 640 /root/vkbot/.env
 #   cp deploy/vkpanel.service /etc/systemd/system/
 #   systemctl daemon-reload && systemctl enable --now vkpanel
 #   journalctl -u vkpanel -f
@@ -10,6 +16,9 @@
 # Отсюда «-w 1»: потоки (--threads) состояние разделяют, процессы — нет.
 #
 # Порт 8080 должен совпадать с proxy_pass в deploy/nginx-panel.conf.
+#
+# Access-лог без query: %(U)s — путь без ?vk_*&sign=… (иначе journald хранит
+# launch-credential Mini App).
 
 [Unit]
 Description=VK bot admin panel (gunicorn)
@@ -18,13 +27,11 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+User=vkbot
+Group=vkbot
 WorkingDirectory=/root/vkbot
 # .env читает сам процесс через python-dotenv — см. комментарий в vkbot.service.
-ExecStart=/root/vkbot/venv/bin/gunicorn -b 127.0.0.1:8080 -w 1 -k gthread --threads 4 --timeout 60 --control-socket /run/vkpanel/gunicorn.ctl --access-logfile - --error-logfile - web_panel:app
-# gunicorn кладёт управляющий сокет в $HOME/.gunicorn, а ProtectHome ниже делает
-# /root доступным только на чтение — получался «Control server error: Read-only
-# file system» и терялся gunicornc (статус воркеров, graceful reload). Каталог
-# создаёт и убирает systemd.
+ExecStart=/root/vkbot/venv/bin/gunicorn -b 127.0.0.1:8080 -w 1 -k gthread --threads 4 --timeout 60 --control-socket /run/vkpanel/gunicorn.ctl --access-logfile - --access-logformat '%%(h)s %%(t)s "%%(m)s %%(U)s" %%(s)s %%(b)s' --error-logfile - web_panel:app
 RuntimeDirectory=vkpanel
 Restart=always
 RestartSec=5
@@ -36,10 +43,16 @@ SyslogIdentifier=vkpanel
 
 NoNewPrivileges=true
 PrivateTmp=true
-ProtectSystem=full
-# См. vkbot.service: проект в /root, писать в него нужно (SQLite в WAL).
+PrivateDevices=true
+ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/root/vkbot
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+ReadWritePaths=/root/vkbot /var/lib/vkbot
 
 [Install]
 WantedBy=multi-user.target

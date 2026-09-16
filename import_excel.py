@@ -475,9 +475,15 @@ def build_column_groups(header_row: list) -> list[dict]:
 
 def import_schedule(excel_path: str = DEFAULT_EXCEL, db_path: str = DB_PATH) -> int:
     print(f"Reading: {excel_path}")
-    wb = openpyxl.load_workbook(excel_path)
+    wb = openpyxl.load_workbook(excel_path, data_only=True, keep_links=False)
     ws = wb[wb.sheetnames[0]]
     print(f"Sheet '{wb.sheetnames[0]}': {ws.max_row} rows x {ws.max_column} cols")
+
+    if (ws.max_row or 0) > 20_000 or (ws.max_column or 0) > 200:
+        raise ValueError(
+            f"лист слишком большой: {ws.max_row}×{ws.max_column} "
+            "(лимит 20000×200)"
+        )
 
     # Step 1: Read header BEFORE expanding merged cells.
     # After expansion the header cells that were originally null (merged extension columns)
@@ -492,6 +498,14 @@ def import_schedule(excel_path: str = DEFAULT_EXCEL, db_path: str = DB_PATH) -> 
     merged_ranges = list(ws.merged_cells.ranges)
     print(f"Expanding {len(merged_ranges)} merged cell ranges...")
     for merge_range in merged_ranges:
+        area = (
+            (merge_range.max_row - merge_range.min_row + 1)
+            * (merge_range.max_col - merge_range.min_col + 1)
+        )
+        if area > 50_000:
+            raise ValueError(
+                f"merged-диапазон слишком большой ({area} ячеек): {merge_range}"
+            )
         top_left_value = ws.cell(merge_range.min_row, merge_range.min_col).value
         ws.unmerge_cells(str(merge_range))
         for r in range(merge_range.min_row, merge_range.max_row + 1):

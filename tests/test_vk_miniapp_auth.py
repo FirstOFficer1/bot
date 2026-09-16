@@ -91,8 +91,12 @@ def test_roles_still_apply(client):
     panel_users.grant(ADMIN, granted_by=1001, name="Админ")
 
     assert client.get(f"/admin/users?{launch_params(uid=ADMIN)}").status_code == 200
-    plain = client.get(f"/admin/users?{launch_params(uid=USER)}")
-    assert plain.status_code in (302, 303), "обычный пользователь в админку не попадает"
+
+    # Отдельный клиент: иначе сессия админа не перезапишется чужим launch
+    # (login-CSRF защита) и тест смотрел бы права не того пользователя.
+    with web_panel.app.test_client() as plain:
+        resp = plain.get(f"/admin/users?{launch_params(uid=USER)}")
+        assert resp.status_code in (302, 303), "обычный пользователь в админку не попадает"
 
 
 def test_launch_is_audited_once_per_session(client):
@@ -199,6 +203,7 @@ def test_launch_without_app_id_config_is_rejected(monkeypatch):
 
 def test_tampered_user_id_is_rejected(client):
     """Подмена vk_user_id в подписанной строке ломает подпись — так и должно быть."""
+    web_panel._SIGN_INVALID_HIT.clear()
     params = launch_params(uid=USER).replace(f"vk_user_id={USER}", "vk_user_id=1")
 
     resp = client.get(f"/me?{params}")

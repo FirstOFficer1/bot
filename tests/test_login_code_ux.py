@@ -69,9 +69,9 @@ async def test_hint_works_for_expired_code_too():
 
 
 @pytest.mark.asyncio
-async def test_random_six_digits_without_request_go_to_fallback():
+async def test_random_eight_digits_without_request_go_to_fallback():
     """Тем, кто код не запрашивал, подсказка не нужна — это обычное число."""
-    handler, _replies = await _dispatch("123456", uid=999)
+    handler, _replies = await _dispatch("12345678", uid=999)
 
     assert handler == "fallback"
 
@@ -125,7 +125,7 @@ def test_pasted_code_is_accepted(client, decorate):
 def test_normalization_does_not_accept_wrong_code(client):
     panel_codes.issue(1001)
 
-    resp = client.post("/login/code", data={"code": "000 000"})
+    resp = client.post("/login/code", data={"code": "0000 0000"})
 
     assert resp.status_code == 200 or "login" in resp.headers.get("Location", "")
     with client.session_transaction() as sess:
@@ -133,7 +133,7 @@ def test_normalization_does_not_accept_wrong_code(client):
 
 
 def test_normalization_does_not_glue_extra_digits(client):
-    """«12345678» — это не шестизначный код, а другое число."""
+    """«1234567890» — это не восьмизначный код, а другое число."""
     code, _ttl = panel_codes.issue(1001)
 
     resp = client.post("/login/code", data={"code": code + "99"})

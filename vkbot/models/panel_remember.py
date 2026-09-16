@@ -1,11 +1,14 @@
 """Долгоживущие токены «запомнить меня» для веб-панели.
 
 Идея: при логине выдаём случайный 32-байтный токен, в БД храним только sha256-хеш.
-Кука `vkbot_rm` живёт 1 год. Эта таблица — **единственный источник правды** по
-авторизации; Flask-сессия используется как тонкий кеш на 1 запрос.
+Кука `vkbot_rm` — единственный источник правды по авторизации; Flask-сессия
+используется как тонкий кеш на 1 запрос.
 
-Таблица создаётся в `db.init()` и имеет колонки:
-    token_hash, vk_id, created_at, last_used_at
+Сроки:
+* абсолютный — TOKEN_TTL_DAYS (полгода): после него токен мёртв независимо от
+  активности;
+* простой — IDLE_TTL_DAYS (60 дней): если last_used_at старше — тоже мёртв.
+  Без idle украденная/забытая кука жила бы весь абсолютный срок.
 """
 
 from __future__ import annotations
@@ -15,10 +18,10 @@ import secrets
 from datetime import timedelta
 
 from ..config import now_msk
-
 from ..db import connect
 
-TOKEN_TTL_DAYS = 365
+TOKEN_TTL_DAYS = 180
+IDLE_TTL_DAYS = 60
 COOKIE_NAME = "vkbot_rm"
 
 
@@ -30,8 +33,12 @@ def _hash(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-def _cutoff() -> str:
+def _created_cutoff() -> str:
     return (now_msk() - timedelta(days=TOKEN_TTL_DAYS)).isoformat(timespec="seconds")
+
+
+def _idle_cutoff() -> str:
+    return (now_msk() - timedelta(days=IDLE_TTL_DAYS)).isoformat(timespec="seconds")
 
 
 def issue(vk_id: int) -> str:
@@ -49,29 +56,29 @@ def issue(vk_id: int) -> str:
 def verify(token: str, *, rotate: bool = False) -> dict | None:
     """Проверяет токен. Возвращает {'vk_id': int, 'new_token': str | None} или None.
 
-    rotate=False (по умолчанию) — простая верификация: обновляем last_used_at и
-    возвращаем `new_token=None`. Безопасно для параллельных запросов: никаких
-    race-condition с удалением. Так работает любой обычный запрос страницы.
-
-    rotate=True — для случаев когда мы хотим явно ротировать: удаляем старый
-    токен, выдаём новый. Используется при `/login/code` и в служебных
-    «refresh»-операциях, **не** в обычном request-pipeline.
+    rotate=False — обычная проверка: обновляем last_used_at.
+    rotate=True — удаляем старый, выдаём новый (для явного refresh).
     """
     if not token:
         return None
     h = _hash(token)
-    cutoff = _cutoff()
+    created_cut = _created_cutoff()
+    idle_cut = _idle_cutoff()
     with connect() as conn:
-        # Фоновая чистка протухших — единым SQL, дёшево
-        conn.execute("DELETE FROM panel_remember_tokens WHERE created_at < ?", (cutoff,))
+        conn.execute(
+            "DELETE FROM panel_remember_tokens "
+            "WHERE created_at < ? OR last_used_at < ?",
+            (created_cut, idle_cut),
+        )
         row = conn.execute(
-            "SELECT vk_id, created_at FROM panel_remember_tokens WHERE token_hash=?",
+            "SELECT vk_id, created_at, last_used_at FROM panel_remember_tokens "
+            "WHERE token_hash=?",
             (h,),
         ).fetchone()
         if not row:
             return None
-        vk_id, created_at = row
-        if created_at < cutoff:
+        vk_id, created_at, last_used_at = row
+        if created_at < created_cut or last_used_at < idle_cut:
             conn.execute("DELETE FROM panel_remember_tokens WHERE token_hash=?", (h,))
             return None
         if rotate:
@@ -102,9 +109,6 @@ def revoke_all(vk_id: int) -> None:
     """Удаляет все токены пользователя (выход со всех устройств)."""
     with connect() as conn:
         conn.execute("DELETE FROM panel_remember_tokens WHERE vk_id=?", (vk_id,))
-
-
-# ── Shim-обёртки (deprecated): убрать после успешного деплоя ──────────────────
 
 
 def verify_no_rotate(token: str) -> int | None:
