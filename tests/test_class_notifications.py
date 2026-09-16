@@ -64,6 +64,22 @@ def test_legacy_subject_prefix_still_filtered():
     assert subjects == {"[чёт] Правоведение"}
 
 
+def test_get_day_matches_notify_week_filter():
+    """Показ дня и пуши должны видеть один и тот же набор пар."""
+    from vkbot.schedule.repo import repo
+
+    _add("Каждую неделю", "")
+    _add("Только чётная", "чёт")
+    _add("Только нечётная", "нечет")
+    _add("[нечет] Легаси", "")
+
+    text = repo.get_day(COURSE, DIRECTION, DAY, "чёт")
+    assert "Каждую неделю" in text
+    assert "Только чётная" in text
+    assert "Только нечётная" not in text
+    assert "Легаси" not in text
+
+
 def test_day_and_direction_are_scoped():
     _add("Нужная пара", "")
     with db.connect(config.SCHEDULE_DB) as conn:

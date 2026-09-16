@@ -90,3 +90,23 @@ jobs:
           name: smoke-shots
           path: /tmp/shots
           if-no-files-found: ignore
+
+  scheduler:
+    name: Прототип составителя расписания
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Установка зависимостей
+        # ortools нужен только прототипу и стоит отдельной работой: в основную
+        # матрицу тестов его тащить незачем — в рантайме бота он не участвует.
+        run: |
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio ortools
+      - name: pytest
+        # Без ortools файл теста сам себя пропускает (importorskip), поэтому
+        # здесь важно проверить, что он не пропустился молча.
+        run: pytest tests/test_scheduler.py -q -rs --strict-markers

@@ -95,15 +95,20 @@ class ScheduleRepo:
         # форматах, которые встречаются в базах вуза («8:00-9:30», «8.15 - 9.45»,
         # «1 пара 08:00-09:30»). Прежний вариант через INSTR(time,' ') молча
         # ломался на формате без пробела — утренние пары уезжали в конец дня.
+        # Фильтр чётности совпадает с workers/classes._day_rows: пустой/NULL —
+        # каждую неделю; legacy-префикс «[чёт]/»/«[нечет]» в subject отсекаем,
+        # иначе показ дня и пуши расходятся на базах из эпохи Telegram-бота.
+        other = "нечет" if week_type == "чёт" else "чёт"
         with connect(config.SCHEDULE_DB) as conn:
             rows = conn.execute(
                 """
                 SELECT time, subject, teacher, room, class_type, date_range FROM schedule
                 WHERE course = ? AND LOWER(direction) = LOWER(?) AND LOWER(day) = LOWER(?)
-                  AND (week = '' OR week = ?)
+                  AND (week IS NULL OR week = '' OR week = ?)
+                  AND subject NOT LIKE ?
                 ORDER BY CAST(time AS INTEGER), time
                 """,
-                (course, direction, day, week_type),
+                (course, direction, day, week_type, "[" + other + "]%"),
             ).fetchall()
 
         if not rows:

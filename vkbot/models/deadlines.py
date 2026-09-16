@@ -48,6 +48,35 @@ def mark_1hour(did: int) -> None:
         conn.execute("UPDATE deadlines SET notified_1hour=1 WHERE id=?", (did,))
 
 
+def claim_1day(did: int) -> bool:
+    """Атомарно занимает слот «за день». False — уже уведомили или заняли."""
+    with connect() as conn:
+        cur = conn.execute(
+            "UPDATE deadlines SET notified_1day=1 WHERE id=? AND notified_1day=0",
+            (did,),
+        )
+        return cur.rowcount == 1
+
+
+def claim_1hour(did: int) -> bool:
+    with connect() as conn:
+        cur = conn.execute(
+            "UPDATE deadlines SET notified_1hour=1 WHERE id=? AND notified_1hour=0",
+            (did,),
+        )
+        return cur.rowcount == 1
+
+
+def unclaim_1day(did: int) -> None:
+    with connect() as conn:
+        conn.execute("UPDATE deadlines SET notified_1day=0 WHERE id=?", (did,))
+
+
+def unclaim_1hour(did: int) -> None:
+    with connect() as conn:
+        conn.execute("UPDATE deadlines SET notified_1hour=0 WHERE id=?", (did,))
+
+
 def cleanup_older_than(cutoff_str: str) -> None:
     """Удаляет дедлайны с deadline_at < cutoff_str (формат YYYY-MM-DD HH:MM)."""
     with connect() as conn:

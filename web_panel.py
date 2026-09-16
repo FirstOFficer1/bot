@@ -334,12 +334,30 @@ class _Conn(sqlite3.Connection):
             self.close()
 
 
+def _open_db(path: str) -> _Conn:
+    """Как vkbot.db.connect: WAL + busy_timeout, иначе панель проигрывает боту в lock."""
+    conn = sqlite3.connect(path, factory=_Conn)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    return conn
+
+
 def _notes_conn():
-    return sqlite3.connect(NOTES_DB, factory=_Conn)
+    return _open_db(NOTES_DB)
 
 
 def _sched_conn(vk: bool = True):
-    return sqlite3.connect(SCHEDULE_DB_VK if vk else SCHEDULE_DB_S, factory=_Conn)
+    return _open_db(SCHEDULE_DB_VK if vk else SCHEDULE_DB_S)
+
+
+_FLASH_KINDS = frozenset({"success", "danger", "info", "warning"})
+
+
+def _flash_kind(default: str = "success") -> str:
+    """kind из query-string попадает в CSS-класс — только whitelist Bootstrap."""
+    kind = request.args.get("kind", default)
+    return kind if kind in _FLASH_KINDS else default
 
 
 # ── Авторизация и роли ────────────────────────────────────────────────────────
@@ -463,14 +481,17 @@ def vk_launch_user_id(args, secret: str, *, now: float | None = None) -> int | N
         except (TypeError, ValueError):
             return None
 
+    # Без vk_ts окно свежести нечем проверить — подпись сама по себе не
+    # истекает, и старый launch-URL оставался бы вечным пропуском.
     ts_raw = args.get("vk_ts")
-    if ts_raw:
-        try:
-            age = (now if now is not None else time.time()) - int(ts_raw)
-        except (TypeError, ValueError):
-            return None
-        if age > VK_LAUNCH_MAX_AGE_SEC or age < -300:
-            return None
+    if not ts_raw:
+        return None
+    try:
+        age = (now if now is not None else time.time()) - int(ts_raw)
+    except (TypeError, ValueError):
+        return None
+    if age > VK_LAUNCH_MAX_AGE_SEC or age < -300:
+        return None
 
     try:
         uid = int(args.get("vk_user_id", 0))
@@ -3859,6 +3880,7 @@ def upload_page():
             f = None
         else:
             suffix = os.path.splitext(f.filename)[1] or ".xlsx"
+            tmp_path = None
             try:
                 with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
                     tmp_path = tmp.name
@@ -3866,9 +3888,15 @@ def upload_page():
                 preview = schedule_loader.preview(tmp_path)
                 pending_token = secrets.token_urlsafe(16)
                 _add_pending(pending_token, tmp_path, f.filename)
+                tmp_path = None  # теперь чистит _PENDING_UPLOADS / atexit
             except Exception:
                 logging.exception("upload preview failed")
                 error = "Не удалось обработать файл (см. логи сервиса)."
+                if tmp_path:
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
     return _render_page(
         "Загрузить расписание",
         _UPLOAD_CONTENT,
@@ -4048,6 +4076,7 @@ def api_schedule_upload():
     if v_err:
         return jsonify({"error": v_err}), 400
     suffix = os.path.splitext(f.filename)[1] or ".xlsx"
+    tmp_path = None
     try:
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
             tmp_path = tmp.name
@@ -4055,9 +4084,15 @@ def api_schedule_upload():
         pv = schedule_loader.preview(tmp_path)
         token = secrets.token_urlsafe(16)
         _add_pending(token, tmp_path, f.filename)
+        tmp_path = None  # теперь чистит _PENDING_UPLOADS / atexit
         return jsonify({"token": token, "preview": pv.__dict__})
     except Exception:
         logging.exception("api upload failed")
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
         return jsonify({"error": "internal error"}), 500
 
 
@@ -4652,11 +4687,10 @@ def users_page():
     q = request.args.get("q", "").strip()
     users = _aggregate_users(search=q)
     flash = request.args.get("flash")
-    flash_kind = request.args.get("kind", "success")
     return _render_page(
         "Пользователи", _USERS_CONTENT,
         users=users, q=q,
-        flash=flash, flash_kind=flash_kind,
+        flash=flash, flash_kind=_flash_kind(),
     )
 
 
@@ -4826,11 +4860,10 @@ def admins_page():
     except Exception:
         known_users = []
     flash = request.args.get("flash")
-    flash_kind = request.args.get("kind", "success")
     return _render_page(
         "Управление админами",
         _ADMINS_CONTENT,
-        admins=admins, owners=owners, flash=flash, flash_kind=flash_kind,
+        admins=admins, owners=owners, flash=flash, flash_kind=_flash_kind(),
         known_users=known_users,
     )
 
@@ -5581,7 +5614,12 @@ def _build_ics(pairs: list, *, weeks_ahead: int = 8, calendar_name: str = "Ра�
             if r[9]:
                 description_parts.append(f"Период: {r[9]}")
             description = "\n".join(description_parts)
-            uid = f"{event_date:%Y%m%d}-{h1:02d}{m1:02d}-{abs(hash((r[4], r[6], r[5]))) % 10**9}@elschedule.ru"
+            # hash() рандомизируется при каждом старте процесса — после рестарта
+            # Google/Apple Calendar видели бы те же пары как новые события.
+            digest = hashlib.sha1(
+                f"{r[4]}|{r[6]}|{r[5]}".encode("utf-8", "replace")
+            ).hexdigest()[:12]
+            uid = f"{event_date:%Y%m%d}-{h1:02d}{m1:02d}-{digest}@elschedule.ru"
             seq += 1
             lines += [
                 "BEGIN:VEVENT",
@@ -5960,13 +5998,12 @@ def _start_broadcast(text: str, uids: list[int], actor) -> bool:
 @admin_required
 def broadcast_page():
     flash = request.args.get("flash")
-    flash_kind = request.args.get("kind", "success")
     snap = _broadcast_snapshot()
     return _render_page(
         "Рассылка", _BROADCAST_CONTENT,
         subscriber_count=_subscriber_count(),
         default_text="",
-        flash=flash, flash_kind=flash_kind,
+        flash=flash, flash_kind=_flash_kind(),
         bc=snap,
         last_result=snap.get("result"),
     )

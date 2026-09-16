@@ -22,6 +22,22 @@ def list_pending() -> list[tuple]:
         ).fetchall()
 
 
+def claim_sent(rid: int) -> bool:
+    """Атомарно помечает напоминание отправленным. False — уже забрали."""
+    with connect() as conn:
+        cur = conn.execute(
+            "UPDATE reminders SET notified=1 WHERE id=? AND notified=0",
+            (rid,),
+        )
+        return cur.rowcount == 1
+
+
+def unclaim(rid: int) -> None:
+    """Откат claim_sent, если отправка не удалась."""
+    with connect() as conn:
+        conn.execute("UPDATE reminders SET notified=0 WHERE id=?", (rid,))
+
+
 def mark_sent(rid: int) -> None:
     with connect() as conn:
         conn.execute("UPDATE reminders SET notified=1 WHERE id=?", (rid,))

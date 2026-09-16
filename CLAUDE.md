@@ -349,10 +349,35 @@ internet.
 
 ### CI
 
-`.github/workflows/ci.yml` runs three jobs on every push and PR: `ruff check .`,
-`pytest -q` on Python 3.10 and 3.12, and the browser smoke against a panel it starts
-itself (screenshots are uploaded as an artifact, the panel log is dumped on failure).
-The smoke job needs no secrets — `VK_TOKEN` is empty and every DB goes to a temp dir.
+`.github/workflows/ci.yml` runs four jobs on every push and PR: `ruff check .`,
+`pytest -q` on Python 3.10 and 3.12, the browser smoke against a panel it starts
+itself (screenshots are uploaded as an artifact, the panel log is dumped on failure),
+and the `scheduler/` prototype's own tests (see below — it needs ortools, which the
+main matrix deliberately does not install). The smoke job needs no secrets —
+`VK_TOKEN` is empty and every DB goes to a temp dir.
+
+## `scheduler/` — schedule-building prototype (not part of the bot)
+
+A CP-SAT (OR-Tools) prototype that **builds** a timetable from scratch, as opposed to
+everything else here, which serves an already-built one. It imports nothing from
+`vkbot/`, never runs in production, and its dependency (`ortools`) lives in
+`requirements-dev.txt` only — so `requirements.txt` stays what prod needs.
+
+Two things to know before touching it:
+
+- **Metrics are counted over the full two-week cycle** (чёт + нечет), every one of
+  them. A weekly class contributes twice, a biweekly one once. Mixing scales — one
+  metric per week, another per cycle — makes the comparison table silently lie, which
+  is exactly the bug `test_metrics_cover_the_two_week_cycle` pins.
+- **Windows must be computed per parity.** A класс «по чётным» plugs a gap only on its
+  own week; a model that ORs all meetings together reports "no windows" where students
+  see them. Both `model.py::busy_map` and `metrics.py::evaluate` do this, and they have
+  to agree — the solver optimizes what the metric measures.
+
+`tests/test_scheduler.py` starts with `pytest.importorskip("ortools")`, because the
+main CI matrix installs only `requirements.txt` and would otherwise die on import. A
+dedicated CI job (`Прототип составителя расписания`) installs ortools and runs that
+file with `-rs`, so it cannot end up skipped everywhere. See `scheduler/README.md`.
 
 ## Other docs (Russian, for humans)
 

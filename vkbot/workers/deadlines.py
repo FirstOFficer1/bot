@@ -81,30 +81,36 @@ async def run(bot) -> None:
                 # бот в этот момент лежал, оно «догонит» на ближайшем тике, а не
                 # потеряется навсегда (флаг notified выставляется только по факту).
                 if not n_1day and datetime.timedelta(hours=1) < delta <= datetime.timedelta(hours=24):
-                    try:
-                        ok = await sender.send(
-                            bot, uid,
-                            f"⚠️ Дедлайн завтра!\n"
-                            f"📌 {subject}{desc_line}\n"
-                            f"🕐 {deadline_fmt}",
-                        )
-                        if ok:
-                            await asyncio.to_thread(model.mark_1day, did)
-                    except Exception:
-                        logging.exception("Deadline 1day send failure id=%s", did)
+                    claimed = await asyncio.to_thread(model.claim_1day, did)
+                    if claimed:
+                        try:
+                            ok = await sender.send(
+                                bot, uid,
+                                f"⚠️ Дедлайн завтра!\n"
+                                f"📌 {subject}{desc_line}\n"
+                                f"🕐 {deadline_fmt}",
+                            )
+                            if not ok:
+                                await asyncio.to_thread(model.unclaim_1day, did)
+                        except Exception:
+                            await asyncio.to_thread(model.unclaim_1day, did)
+                            logging.exception("Deadline 1day send failure id=%s", did)
 
                 if not n_1hour and datetime.timedelta(0) < delta <= datetime.timedelta(hours=1):
-                    try:
-                        ok = await sender.send(
-                            bot, uid,
-                            f"🔴 Дедлайн через час!\n"
-                            f"📌 {subject}{desc_line}\n"
-                            f"🕐 {deadline_fmt}",
-                        )
-                        if ok:
-                            await asyncio.to_thread(model.mark_1hour, did)
-                    except Exception:
-                        logging.exception("Deadline 1hour send failure id=%s", did)
+                    claimed = await asyncio.to_thread(model.claim_1hour, did)
+                    if claimed:
+                        try:
+                            ok = await sender.send(
+                                bot, uid,
+                                f"🔴 Дедлайн через час!\n"
+                                f"📌 {subject}{desc_line}\n"
+                                f"🕐 {deadline_fmt}",
+                            )
+                            if not ok:
+                                await asyncio.to_thread(model.unclaim_1hour, did)
+                        except Exception:
+                            await asyncio.to_thread(model.unclaim_1hour, did)
+                            logging.exception("Deadline 1hour send failure id=%s", did)
             await asyncio.to_thread(heartbeats.mark, heartbeats.DEADLINES)
         except Exception:
             # Воркер не должен умирать: одна ошибка не отменяет следующий тик.

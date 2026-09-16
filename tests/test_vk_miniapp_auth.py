@@ -173,6 +173,21 @@ def test_launch_from_the_future_is_rejected(client):
     assert resp.status_code in (302, 303)
 
 
+def test_launch_without_vk_ts_is_rejected():
+    """Подпись без метки времени не истекает — такой URL нельзя принимать."""
+    params = {
+        "vk_app_id": str(APP_ID),
+        "vk_user_id": str(USER),
+        "vk_is_app_user": "1",
+    }
+    query = urlencode(sorted(params.items()))
+    digest = hmac.new(SECRET.encode(), query.encode(), hashlib.sha256).digest()
+    sign = base64.urlsafe_b64encode(digest).decode().rstrip("=")
+    args = {**params, "sign": sign}
+
+    assert web_panel.vk_launch_user_id(args, SECRET) is None
+
+
 def test_tampered_user_id_is_rejected(client):
     """Подмена vk_user_id в подписанной строке ломает подпись — так и должно быть."""
     params = launch_params(uid=USER).replace(f"vk_user_id={USER}", "vk_user_id=1")

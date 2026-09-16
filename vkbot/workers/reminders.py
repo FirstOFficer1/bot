@@ -25,11 +25,17 @@ async def run(bot) -> None:
                 except ValueError:
                     continue
                 if remind_at <= now:
+                    # Сначала claim, потом send: иначе рестарт между отправкой и
+                    # mark_sent дублирует пуш. Неуспешную отправку откатываем.
+                    claimed = await asyncio.to_thread(model.claim_sent, rid)
+                    if not claimed:
+                        continue
                     try:
                         ok = await sender.send(bot, uid, f"⏰ Напоминание: {text}")
-                        if ok:
-                            await asyncio.to_thread(model.mark_sent, rid)
+                        if not ok:
+                            await asyncio.to_thread(model.unclaim, rid)
                     except Exception:
+                        await asyncio.to_thread(model.unclaim, rid)
                         logging.exception("Reminder send failure id=%s", rid)
             await asyncio.to_thread(heartbeats.mark, heartbeats.REMINDERS)
         except Exception:
