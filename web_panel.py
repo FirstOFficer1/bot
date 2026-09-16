@@ -298,10 +298,6 @@ def _assert_owner_exists() -> None:
 # стартовал не из корня — панель и бот открывали разные файлы notes.db.
 NOTES_DB       = _bot_config.NOTES_DB
 SCHEDULE_DB_VK = _bot_config.SCHEDULE_DB   # 'с' в имени файла — кириллица
-# База легаси Telegram-бота. Путь переопределяется так же, как остальные:
-# при другом DATA_DIR (тесты, dev-запуск) панель иначе писала бы в файл в
-# корне проекта мимо всех остальных баз.
-SCHEDULE_DB_S  = os.getenv("LEGACY_SCHEDULE_DB") or str(_bot_config.DATA_DIR / "s.db")
 
 
 # Схема БД создаётся здесь же: панель может быть поднята раньше бота, а таблицы
@@ -347,8 +343,8 @@ def _notes_conn():
     return _open_db(NOTES_DB)
 
 
-def _sched_conn(vk: bool = True):
-    return _open_db(SCHEDULE_DB_VK if vk else SCHEDULE_DB_S)
+def _sched_conn():
+    return _open_db(SCHEDULE_DB_VK)
 
 
 _FLASH_KINDS = frozenset({"success", "danger", "info", "warning"})
@@ -459,10 +455,10 @@ VK_APP_ID = _bot_config.int_env("VK_APP_ID")
 
 # Насколько старый запуск ещё пускаем внутрь. Подпись сама по себе не истекает,
 # а launch-URL вместе с ней остаётся в истории браузера и на скриншотах,
-# поэтому ограничиваем окно. Сутки — компромисс: сессия Mini App живёт долго,
-# а куки в iframe браузеры режут, и подпись может остаться единственным
-# доказательством личности на протяжении всего сеанса.
-VK_LAUNCH_MAX_AGE_SEC = _bot_config.int_env("VK_LAUNCH_MAX_AGE_SEC", 24 * 3600)
+# поэтому ограничиваем окно. 12 часов — компромисс: сессия Mini App живёт
+# долго (куки в iframe режут, подпись часто остаётся единственным
+# доказательством личности), но сутки давали слишком широкое окно replay.
+VK_LAUNCH_MAX_AGE_SEC = _bot_config.int_env("VK_LAUNCH_MAX_AGE_SEC", 12 * 3600)
 
 
 def vk_launch_user_id(args, secret: str, *, now: float | None = None) -> int | None:
@@ -474,12 +470,15 @@ def vk_launch_user_id(args, secret: str, *, now: float | None = None) -> int | N
     if not verify_vk_launch_sign(args, secret):
         return None
 
-    if VK_APP_ID:
-        try:
-            if int(args.get("vk_app_id", 0)) != VK_APP_ID:
-                return None
-        except (TypeError, ValueError):
+    # Без своего app id «наш» запуск не отличить от чужого с тем же секретом
+    # (или от опечатки в .env). Бесшовный вход в таком случае выключен.
+    if not VK_APP_ID:
+        return None
+    try:
+        if int(args.get("vk_app_id", 0)) != VK_APP_ID:
             return None
+    except (TypeError, ValueError):
+        return None
 
     # Без vk_ts окно свежести нечем проверить — подпись сама по себе не
     # истекает, и старый launch-URL оставался бы вечным пропуском.
@@ -730,16 +729,18 @@ def _get_stats() -> dict:
         "recent_uploads": [],       # [(uploaded_at, original_filename, row_count, uploaded_by), ...]
         "recent_users": [],         # [(uid, last_seen, kind), ...]
     }
-    for key, vk in (("schedule_vk", True), ("schedule_s", False)):
+    for key, path in (("schedule_vk", SCHEDULE_DB_VK),):
         c = None
         try:
-            c = _sched_conn(vk)
+            c = _open_db(path)
             stats[key] = c.execute("SELECT COUNT(*) FROM schedule").fetchone()[0]
         except Exception:
             pass
         finally:
             if c is not None:
                 c.close()
+    # schedule_s — легаси Telegram-база; больше не пишем и не считаем.
+    stats["schedule_s"] = 0
     conn = None
     try:
         conn = _notes_conn()
@@ -825,7 +826,7 @@ def _get_stats() -> dict:
                 subs_by_course[c] = n
         except Exception:
             pass
-        sc = _sched_conn(vk=True)
+        sc = _sched_conn()
         course_rows = sc.execute(
             "SELECT course, COUNT(DISTINCT direction) AS dirs, COUNT(*) AS rows "
             "FROM schedule GROUP BY course ORDER BY course"
@@ -3587,7 +3588,7 @@ def _today_tomorrow_preview(course: int | None = None, direction: str | None = N
         extra_params.append(direction)
     conn = None
     try:
-        conn = _sched_conn(vk=True)
+        conn = _sched_conn()
         for key, d in (("today", today_d), ("tomorrow", tomorrow_d)):
             wd = d.weekday()
             if wd == 6:
@@ -3653,7 +3654,7 @@ def _all_courses_directions() -> tuple[list[int], dict[int, list[str]]]:
     courses: list[int] = []
     by_course: dict[int, list[str]] = {}
     try:
-        with _sched_conn(vk=True) as conn:
+        with _sched_conn() as conn:
             courses = [r[0] for r in conn.execute(
                 "SELECT DISTINCT course FROM schedule ORDER BY course"
             ).fetchall()]
@@ -3908,19 +3909,6 @@ def upload_page():
     )
 
 
-def _sync_legacy_schedule_db(excel_path: str, context: str) -> None:
-    """Переливает то же расписание в s.db — базу легаси Telegram-бота.
-
-    Ошибки только логируем: VK-бот и панель читают свою базу, расхождение с
-    легаси-ботом не повод валить загрузку. Вызывать нужно из ВСЕХ путей, где
-    расписание меняется (панель и API, загрузка и откат), иначе базы разъедутся.
-    """
-    try:
-        from import_excel import import_schedule
-
-        import_schedule(excel_path, SCHEDULE_DB_S)
-    except Exception:
-        logging.exception("Не удалось обновить s.db (%s)", context)
 
 
 @app.route("/upload/commit", methods=["POST"])
@@ -3941,7 +3929,6 @@ def upload_commit():
             original or "—",
             f"rows={result.get('row_count', '?')}, notify={'yes' if notify else 'no'}",
         )
-        _sync_legacy_schedule_db(excel_path, "загрузка из панели")
         # Рассылка подписчикам (опционально) — в фоне, чтобы не держать запрос.
         if notify:
             uids = notifier.subscribed_uids()
@@ -4025,14 +4012,11 @@ def upload_cancel():
 @admin_required
 def upload_rollback(version_id: int):
     try:
-        result = schedule_loader.rollback(
+        schedule_loader.rollback(
             version_id, uploaded_by=f"admin:{_current_vk_id() or 'password'}"
         )
         _ics_cache_clear()
         audit.log(_current_vk_id(), "schedule.rollback", f"version={version_id}", "")
-        # rollback() возвращает свежую копию того же Excel — из неё и обновляем
-        # s.db (легаси Telegram-бот), иначе базы разъедутся.
-        _sync_legacy_schedule_db(result["saved_path"], "откат из панели")
     except Exception:
         logging.exception("schedule rollback failed")
         return _render_page(
@@ -4115,7 +4099,6 @@ def api_schedule_commit():
             None, "schedule.upload", original or "—",
             f"rows={result.get('row_count', '?')}, via=api",
         )
-        _sync_legacy_schedule_db(excel_path, "загрузка через API")
         return jsonify(result)
     except Exception:
         # Текст исключения наружу не отдаём: в нём бывают пути и SQL.
@@ -4152,7 +4135,6 @@ def api_schedule_rollback(version_id: int):
         return jsonify({"error": "internal error"}), 500
     _ics_cache_clear()
     audit.log(None, "schedule.rollback", f"version={version_id}", "via=api")
-    _sync_legacy_schedule_db(result["saved_path"], "откат через API")
     return jsonify(result)
 
 
@@ -4250,7 +4232,7 @@ def schedule_page():
     rooms: list[str] = []
     conn = None
     try:
-        conn = _sched_conn(vk=True)
+        conn = _sched_conn()
         courses = [
             r[0] for r in conn.execute(
                 "SELECT DISTINCT course FROM schedule ORDER BY course"
@@ -5128,7 +5110,7 @@ def _find_conflicts() -> dict:
     teachers: list[dict] = []
     rooms: list[dict] = []
     try:
-        with _sched_conn(vk=True) as conn:
+        with _sched_conn() as conn:
             # Конфликты преподавателей: одинаковый (teacher, day, time, week-or-empty)
             for row in conn.execute(
                 """
@@ -5479,7 +5461,7 @@ _ENTITY_CONTENT = """
 def teacher_page(name: str):
     rows = []
     try:
-        with _sched_conn(vk=True) as conn:
+        with _sched_conn() as conn:
             rows = conn.execute(
                 "SELECT course, direction, day, time, subject, teacher, room, "
                 "week, class_type, date_range FROM schedule WHERE teacher=? "
@@ -5500,7 +5482,7 @@ def teacher_page(name: str):
 def room_page(name: str):
     rows = []
     try:
-        with _sched_conn(vk=True) as conn:
+        with _sched_conn() as conn:
             rows = conn.execute(
                 "SELECT course, direction, day, time, subject, teacher, room, "
                 "week, class_type, date_range FROM schedule WHERE room=? "
@@ -5673,7 +5655,7 @@ def calendar_ics():
         pairs = []
         cal_name = "ЧГПУ · Расписание"
         try:
-            with _sched_conn(vk=True) as conn:
+            with _sched_conn() as conn:
                 if pref:
                     cal_name = f"ЧГПУ · {pref[0]} курс · {pref[1]}"
                     pairs = conn.execute(

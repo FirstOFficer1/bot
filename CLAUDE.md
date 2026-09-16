@@ -255,16 +255,12 @@ ever run, and it needs `panel_login_codes` / `panel_remember_tokens` for its own
 **`/api/schedule/*` must mirror the UI routes.** Both change the same schedule, so a
 change to one path belongs in the other: write an `audit.log` entry (the API is
 otherwise a way to swap the schedule leaving no trace in `/admin/audit`), call
-`_ics_cache_clear()`, call `_sync_legacy_schedule_db()`, and return a generic error
+`_ics_cache_clear()`, and return a generic error
 message — `str(e)` leaks paths and SQL to the caller.
 
-**Legacy `s.db` — now vestigial.** The panel re-imports every schedule change into
-`s.db` via `_sync_legacy_schedule_db()`, called from every mutating path (panel/API ×
-upload/rollback); the path follows `DATA_DIR` (override: `LEGACY_SCHEDULE_DB`). It
-existed to keep the old Telegram bot's database from drifting — but that bot
-(`bot.py`) was deleted on 2026-09-09, so nothing reads `s.db` any more. The writes are
-harmless and still guarded, and removing them touches all four mutating paths, so it
-is left as a separate cleanup rather than folded into the deletion.
+**Legacy `s.db` removed.** The old Telegram bot (`bot.py`) was deleted on
+2026-09-09; the panel no longer re-imports into `s.db` on upload/rollback.
+`deploy/backup.sh` may still copy a leftover `s.db` if the file exists on disk.
 
 **Single-process requirement.** `_PENDING_UPLOADS`, `_LAST_BROADCAST` and `_ICS_CACHE`
 are in-memory module state. A second worker breaks schedule uploads ("unknown or

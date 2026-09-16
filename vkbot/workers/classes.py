@@ -117,27 +117,28 @@ async def run(bot) -> None:
                     lines.append(f"• Начало: {start_str}")
                     text = "\n".join(lines)
 
-                    # Один запрос на пару вместо запроса на каждого подписчика.
+                    # Сначала claim, потом send: иначе рестарт между рассылкой и
+                    # mark_many повторно пушит тех же людей. Недоставленное
+                    # откатываем — слот снова свободен на следующем тике.
                     already = await asyncio.to_thread(
                         sent_notifs.sent_uids, key, date_str, start_str
                     )
-                    delivered: list[int] = []
-                    for uid in uids:
-                        if uid in already:
-                            continue
-                        try:
-                            if await sender.send(bot, uid, text):
-                                delivered.append(uid)
-                        except Exception:
-                            logging.exception("Class notify send failure uid=%s", uid)
-                    # Отметки пишем пачкой после рассылки пары. Если процесс
-                    # упадёт между отправкой и записью, эти получатели поймают
-                    # уведомление второй раз — неприятно, но не страшно; цена
-                    # обратного варианта (запись на каждого) — N транзакций
-                    # внутри цикла отправки.
-                    await asyncio.to_thread(
-                        sent_notifs.mark_many, delivered, key, date_str, start_str
+                    to_send = [uid for uid in uids if uid not in already]
+                    claimed = await asyncio.to_thread(
+                        sent_notifs.claim_many, to_send, key, date_str, start_str
                     )
+                    failed: list[int] = []
+                    for uid in claimed:
+                        try:
+                            if not await sender.send(bot, uid, text):
+                                failed.append(uid)
+                        except Exception:
+                            failed.append(uid)
+                            logging.exception("Class notify send failure uid=%s", uid)
+                    if failed:
+                        await asyncio.to_thread(
+                            sent_notifs.unclaim_many, failed, key, date_str, start_str
+                        )
             await asyncio.to_thread(heartbeats.mark, heartbeats.CLASSES)
         except Exception:
             # Воркер не должен умирать: одна ошибка не отменяет следующий тик.

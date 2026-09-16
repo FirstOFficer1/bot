@@ -52,6 +52,27 @@ def test_mark_many_on_empty_list_does_nothing():
     assert sent_notifs.sent_uids(KEY, DATE, TIME) == set()
 
 
+def test_claim_many_is_single_winner_per_uid():
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(
+            pool.map(
+                lambda _: sent_notifs.claim_many([42, 43], KEY, DATE, TIME),
+                range(8),
+            )
+        )
+    claimed = [uid for batch in results for uid in batch]
+    assert sorted(claimed) == [42, 43]
+    assert sent_notifs.sent_uids(KEY, DATE, TIME) == {42, 43}
+
+
+def test_unclaim_many_frees_slots_for_retry():
+    assert sent_notifs.claim_many([7], KEY, DATE, TIME) == [7]
+    sent_notifs.unclaim_many([7], KEY, DATE, TIME)
+    assert sent_notifs.claim_many([7], KEY, DATE, TIME) == [7]
+
+
 def test_two_hundred_subscribers_cost_one_connection(monkeypatch):
     """Раньше на каждого подписчика открывалось своё соединение."""
     uids = list(range(100, 300))

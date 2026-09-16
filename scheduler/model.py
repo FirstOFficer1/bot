@@ -115,38 +115,76 @@ def solve_times(inst: Instance, weights: dict[str, int], *, time_limit: float = 
                 model.Add(x[m.id, d, p] == 0)
 
     # ── связь с аудиторным фондом ───────────────────────────────────────────
-    # Считаем по вложенным множествам комнат: занятий, которым не подходит
-    # ничего кроме множества S, в одном слоте не может быть больше, чем |S|.
-    # Без этого первая фаза выдаёт время, под которое потом физически негде
-    # провести занятия, и вторая фаза падает без объяснения причины.
-    pools = {
-        KIND_GYM: [r for r in inst.rooms.values() if r.kind == KIND_GYM],
-        KIND_LAB: [r for r in inst.rooms.values() if r.kind == KIND_LAB],
-        "любая": [r for r in inst.rooms.values() if r.kind != KIND_GYM],
-    }
-    demand: dict[str, list[Meeting]] = {KIND_GYM: [], KIND_LAB: []}
-    for m in inst.meetings:
-        if m.room_kind == KIND_GYM:
-            demand[KIND_GYM].append(m)
-        elif m.room_kind == KIND_LAB:
-            demand[KIND_LAB].append(m)
-    # Общий фонд делят все, кроме физкультуры: она занимает только спортзал.
-    demand["любая"] = [m for m in inst.meetings if m.room_kind != KIND_GYM]
+    # Вложенные множества: занятий, которым подходит только комнаты из S,
+    # в одном слоте не больше |S|. Считаем и по типу (спортзал/лаб), и по
+    # вместимости — иначе первая фаза ставит время, под которое потом некуда
+    # посадить поток, и assign_rooms падает на валидном инстансе.
+    def _meeting_size(m: Meeting) -> int:
+        return sum(inst.groups[g].size for g in m.groups if g in inst.groups)
 
-    room_slack = {}
-    for pool_name, rooms in pools.items():
-        cap = len(rooms)
-        for (d, p) in slots:
-            for w in PARITIES:
-                active = [x[m.id, d, p] for m in demand[pool_name] if _serves(m, w)]
-                if not active:
-                    continue
-                if relax:
-                    s = model.NewIntVar(0, len(active), f"slack_{pool_name}_{d}_{p}_{w}")
-                    room_slack[pool_name, d, p, w] = s
-                    model.Add(sum(active) <= cap + s)
-                else:
-                    model.Add(sum(active) <= cap)
+    def _add_pool_caps(
+        pool_rooms: list,
+        demand_meets: list[Meeting],
+        tag: str,
+        *,
+        by_capacity: bool,
+    ) -> None:
+        if not pool_rooms:
+            # Комнат нет — в слот нельзя ставить никого из спроса (или slack).
+            for (d, p) in slots:
+                for w in PARITIES:
+                    active = [x[m.id, d, p] for m in demand_meets if _serves(m, w)]
+                    if not active:
+                        continue
+                    if relax:
+                        s = model.NewIntVar(0, len(active), f"slack_{tag}_{d}_{p}_{w}")
+                        room_slack[tag, d, p, w] = s
+                        model.Add(sum(active) <= s)
+                    else:
+                        model.Add(sum(active) == 0)
+            return
+
+        # Пороги вместимости: занятия размера ≥ T делят только комнаты ≥ T.
+        thresholds = [0]
+        if by_capacity:
+            thresholds = sorted({r.capacity for r in pool_rooms} | {0})
+        for thr in thresholds:
+            rooms_ok = [r for r in pool_rooms if r.capacity >= thr] if by_capacity else pool_rooms
+            cap = len(rooms_ok)
+            needy = (
+                [m for m in demand_meets if _meeting_size(m) >= thr]
+                if by_capacity
+                else demand_meets
+            )
+            if not needy:
+                continue
+            for (d, p) in slots:
+                for w in PARITIES:
+                    active = [x[m.id, d, p] for m in needy if _serves(m, w)]
+                    if not active:
+                        continue
+                    if relax:
+                        s = model.NewIntVar(
+                            0, len(active), f"slack_{tag}_{thr}_{d}_{p}_{w}"
+                        )
+                        room_slack[tag, thr, d, p, w] = s
+                        model.Add(sum(active) <= cap + s)
+                    else:
+                        model.Add(sum(active) <= cap)
+
+    room_slack: dict = {}
+    gym_rooms = [r for r in inst.rooms.values() if r.kind == KIND_GYM]
+    lab_rooms = [r for r in inst.rooms.values() if r.kind == KIND_LAB]
+    plain_rooms = [r for r in inst.rooms.values() if r.kind != KIND_GYM]
+    gym_demand = [m for m in inst.meetings if m.room_kind == KIND_GYM]
+    lab_demand = [m for m in inst.meetings if m.room_kind == KIND_LAB]
+    # Общий фонд (без спортзала) делят все не-физкультурные занятия; лабы
+    # дополнительно ограничены lab_rooms выше.
+    any_demand = [m for m in inst.meetings if m.room_kind != KIND_GYM]
+
+    _add_pool_caps(gym_rooms, gym_demand, KIND_GYM, by_capacity=False)
+    _add_pool_caps(lab_rooms, lab_demand, KIND_LAB, by_capacity=True)
+    _add_pool_caps(plain_rooms, any_demand, "любая", by_capacity=True)
 
     # ── целевая функция: занятость, окна, дни, перегруз ─────────────────────
     penalties: list[tuple[int, object]] = []
@@ -266,11 +304,24 @@ def solve_times(inst: Instance, weights: dict[str, int], *, time_limit: float = 
                     sol.times[m.id] = (d, p)
                     break
         if relax:
-            diag["нехватка_аудиторий"] = {
-                f"{inst.days[d]}, {inst.periods[p]}, неделя {w}, фонд «{pool}»":
-                    solver.Value(s)
-                for (pool, d, p, w), s in room_slack.items() if solver.Value(s) > 0
-            }
+            shortage = {}
+            for key, s in room_slack.items():
+                val = solver.Value(s)
+                if val <= 0:
+                    continue
+                # Ключ: (pool, d, p, w) или (pool, thr, d, p, w) для порогов вместимости.
+                if len(key) == 4:
+                    pool, d, p, w = key
+                    thr_s = ""
+                else:
+                    pool, thr, d, p, w = key
+                    thr_s = f", ≥{thr} мест" if thr else ""
+                label = (
+                    f"{inst.days[d]}, {inst.periods[p]}, неделя {w}, "
+                    f"фонд «{pool}»{thr_s}"
+                )
+                shortage[label] = val
+            diag["нехватка_аудиторий"] = shortage
     return sol, diag
 
 

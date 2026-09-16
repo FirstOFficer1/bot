@@ -101,4 +101,9 @@ def test_notif_index_migrated_to_class_key():
         cols = [
             r[2] for r in conn.execute("PRAGMA index_info('idx_sent_notifs_lookup')").fetchall()
         ]
+        unique = any(
+            r[1] == "idx_sent_notifs_lookup" and r[2]
+            for r in conn.execute("PRAGMA index_list('sent_class_notifications')")
+        )
     assert cols == ["user_id", "class_key", "class_date", "class_time"]
+    assert unique, "без UNIQUE claim-before-send не держит гонку"

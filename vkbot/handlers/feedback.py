@@ -6,12 +6,23 @@ import logging
 import time
 
 from .. import sender
-from ..config import ADMIN_ID, MAX_INPUT_LEN
+from ..config import MAX_INPUT_LEN, env_owner_ids
 from ..keyboards import CANCEL_KB, MAIN_KB
+from ..models import panel_users
 from ..state import store
 
 _FEEDBACK_COOLDOWN_SEC = 60
 _last_feedback_at: dict[int, float] = {}
+
+
+def _feedback_recipients() -> list[int]:
+    """Все владельцы: env-якорь плюс co-owners из панели."""
+    ids = set(env_owner_ids())
+    try:
+        ids |= panel_users.owner_ids()
+    except Exception:
+        logging.exception("Не удалось прочитать владельцев для фидбэка")
+    return sorted(ids)
 
 
 async def try_handle(bot, message, state, text, uid) -> bool:
@@ -56,11 +67,10 @@ async def try_handle(bot, message, state, text, uid) -> bool:
 
     store.pop(uid, None)
     await message.answer("✅ Спасибо! Твоё сообщение получено.", keyboard=MAIN_KB)
-    if ADMIN_ID:
+    body = f"💬 Новый фидбэк от [id{uid}|id{uid}]:\n\n{text}"
+    for owner_id in _feedback_recipients():
         try:
-            await sender.send(
-                bot, ADMIN_ID, f"💬 Новый фидбэк от [id{uid}|id{uid}]:\n\n{text}"
-            )
+            await sender.send(bot, owner_id, body)
         except Exception:
-            logging.exception("Не удалось переслать фидбэк админу")
+            logging.exception("Не удалось переслать фидбэк владельцу %s", owner_id)
     return True

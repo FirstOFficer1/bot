@@ -260,3 +260,24 @@ def test_metrics_cover_the_two_week_cycle():
 
     assert evaluate(weekly, baseline(weekly)).дни_преподов == 2
     assert evaluate(biweekly, baseline(biweekly)).дни_преподов == 1
+
+
+def test_time_phase_respects_lab_room_count():
+    """Две лабораторные и одна лаб. аудитория — не в один слот."""
+    inst = build([
+        row(subject="Лаб А", time="8.15 - 9.45", room="5 корп 220",
+            class_type="лб", teacher="Иванов И. И."),
+        row(subject="Лаб Б", time="8.15 - 9.45", room="5 корп 220",
+            class_type="лб", teacher="Петров П. П.", direction="Другое"),
+    ])
+    # Оставляем одну лабораторию — иначе две лабы в одном слоте проходят по
+    # «любому» фонду аудиторий и ломают фазу комнат.
+    labs = [rid for rid, r in inst.rooms.items() if r.kind == "лаборатория"]
+    assert labs, "ожидалась хотя бы одна лабораторная аудитория"
+    keep = labs[0]
+    inst.rooms = {keep: inst.rooms[keep]}
+
+    sol, _ = solve_times(inst, PROFILES["баланс"], time_limit=10)
+    assert sol.times, "солвер должен найти допустимое время"
+    slots = list(sol.times.values())
+    assert len(slots) == len(set(slots)), "две лабы в одной комнате не делят слот"

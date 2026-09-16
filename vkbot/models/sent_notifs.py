@@ -8,6 +8,8 @@ rowid, поэтому загрузка нового файла в середин
 
 from __future__ import annotations
 
+import sqlite3
+
 from ..config import now_msk
 from ..db import connect
 
@@ -71,6 +73,44 @@ def mark_many(uids: list[int], key: str, date: str, time: str) -> None:
             "(user_id, class_key, class_date, class_time, sent_at) "
             "VALUES (?,?,?,?,?)",
             [(uid, key, date, time, stamp) for uid in uids],
+        )
+
+
+def claim_many(uids: list[int], key: str, date: str, time: str) -> list[int]:
+    """Атомарно занимает слоты дедупа до отправки. Возвращает, кого заняли.
+
+    Уникальный индекс не даёт двум воркерам/рестартам занять один и тот же
+    (user, pair, day, time). Каждого uid пишем в своей транзакции: иначе при
+    гонке IntegrityError на commit откатил бы весь пакет.
+    """
+    if not uids:
+        return []
+    stamp = now_msk().isoformat(timespec="seconds")
+    claimed: list[int] = []
+    for uid in uids:
+        try:
+            with connect() as conn:
+                conn.execute(
+                    "INSERT INTO sent_class_notifications "
+                    "(user_id, class_key, class_date, class_time, sent_at) "
+                    "VALUES (?,?,?,?,?)",
+                    (uid, key, date, time, stamp),
+                )
+            claimed.append(uid)
+        except sqlite3.IntegrityError:
+            continue
+    return claimed
+
+
+def unclaim_many(uids: list[int], key: str, date: str, time: str) -> None:
+    """Откат claim_many, если отправка не удалась — слот снова свободен."""
+    if not uids:
+        return
+    with connect() as conn:
+        conn.executemany(
+            "DELETE FROM sent_class_notifications "
+            "WHERE user_id=? AND class_key=? AND class_date=? AND class_time=?",
+            [(uid, key, date, time) for uid in uids],
         )
 
 

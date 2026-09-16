@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
-from vkbot import config
 from vkbot.models import audit, panel_codes, panel_sessions, panel_users
 
 import tools.make_demo_schedule as demo
@@ -234,11 +231,10 @@ def test_upload_size_limit_configured():
     assert web_panel.app.config["MAX_CONTENT_LENGTH"] > 0
 
 
-# ── API меняет расписание: аудит, ошибки, легаси-база ─────────────────────────
+# ── API меняет расписание: аудит и ошибки ─────────────────────────────────────
 #
 # Раньше «закалку» получили только маршруты панели: /api/schedule/* писал
-# расписание без единой записи в аудите, не обновлял s.db при откате и отдавал
-# наружу текст исключения.
+# расписание без единой записи в аудите и отдавал наружу текст исключения.
 
 API_AUTH = {"Authorization": "Bearer test-api-token"}
 
@@ -287,16 +283,7 @@ def test_api_rollback_of_unknown_version_is_404(client):
     assert resp.get_json() == {"error": "version not found"}
 
 
-def test_legacy_db_follows_data_dir(client, excel):
-    """s.db должна лежать рядом с остальными базами, а не в корне проекта."""
-    assert web_panel.SCHEDULE_DB_S.startswith(str(config.DATA_DIR))
-
-    assert _api_commit(client, excel).status_code == 200
-    assert Path(web_panel.SCHEDULE_DB_S).exists(), "легаси-база не обновилась через API"
-
-
-def test_panel_rollback_updates_audit_and_legacy_db(client, admin_id, excel):
-    """Откат из панели: аудит + s.db берутся из свежей копии Excel."""
+def test_panel_rollback_is_recorded_in_audit(client, admin_id, excel):
     assert _api_commit(client, excel).status_code == 200
     version_id = web_panel.schedule_loader.list_versions()[0]["id"]
     _login(client, admin_id)
@@ -306,7 +293,6 @@ def test_panel_rollback_updates_audit_and_legacy_db(client, admin_id, excel):
 
     events = audit.list_recent(action_prefix="schedule.rollback")
     assert [e for e in events if e["target"] == f"version={version_id}"]
-    assert Path(web_panel.SCHEDULE_DB_S).exists()
 
 
 # ── Разбор env и защита редиректа (находки код-ревью) ────────────────────────

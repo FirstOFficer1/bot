@@ -173,7 +173,7 @@ def init() -> None:
                 ON subscriptions(user_id, course, LOWER(direction));
             CREATE INDEX IF NOT EXISTS idx_reminders_pending ON reminders(notified, remind_at);
             CREATE INDEX IF NOT EXISTS idx_deadlines_at ON deadlines(deadline_at);
-            CREATE INDEX IF NOT EXISTS idx_sent_notifs_lookup
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_sent_notifs_lookup
                 ON sent_class_notifications(user_id, class_key, class_date, class_time);
             CREATE INDEX IF NOT EXISTS idx_sent_notifs_date ON sent_class_notifications(class_date);
             CREATE INDEX IF NOT EXISTS idx_notes_user ON notes(user_id);
@@ -196,14 +196,27 @@ def init() -> None:
         # CREATE INDEX IF NOT EXISTS не переопределяет уже существующий индекс,
         # поэтому на старой БД idx_sent_notifs_lookup остался бы висеть на
         # schedule_row_id — и новый запрос дедупликации шёл бы мимо него.
+        # Плюс индекс обязан быть UNIQUE: иначе claim-before-send не держит гонку.
         idx_cols = [
             row[2]
             for row in conn.execute("PRAGMA index_info('idx_sent_notifs_lookup')").fetchall()
         ]
-        if "class_key" not in idx_cols:
+        idx_unique = any(
+            row[1] == "idx_sent_notifs_lookup" and row[2]
+            for row in conn.execute("PRAGMA index_list('sent_class_notifications')")
+        )
+        if "class_key" not in idx_cols or not idx_unique:
             conn.execute("DROP INDEX IF EXISTS idx_sent_notifs_lookup")
+            # Перед UNIQUE убираем дубли, иначе CREATE UNIQUE INDEX упадёт на
+            # боевой базе, где гонка уже успела записать одну пару дважды.
             conn.execute(
-                "CREATE INDEX idx_sent_notifs_lookup "
+                "DELETE FROM sent_class_notifications WHERE id NOT IN ("
+                "  SELECT MIN(id) FROM sent_class_notifications "
+                "  GROUP BY user_id, class_key, class_date, class_time"
+                ")"
+            )
+            conn.execute(
+                "CREATE UNIQUE INDEX idx_sent_notifs_lookup "
                 "ON sent_class_notifications(user_id, class_key, class_date, class_time)"
             )
 

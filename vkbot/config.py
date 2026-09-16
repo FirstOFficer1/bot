@@ -29,6 +29,25 @@ def int_env(name: str, default: int = 0) -> int:
 
 ADMIN_ID: int = int_env("ADMIN_ID")
 
+
+def env_owner_ids() -> set[int]:
+    """Владельцы из env: ADMIN_ID / ADMIN_VK_ID / ADMIN_VK_IDS.
+
+    То же множество, что панель считает несменяемым якорем — бот использует
+    его, когда нужно достучаться до всех владельцев (например, фидбэк).
+    """
+    ids: set[int] = set()
+    for key in ("ADMIN_VK_ID", "ADMIN_ID"):
+        raw = (os.getenv(key) or "").strip()
+        if raw.isdigit():
+            ids.add(int(raw))
+    for part in (os.getenv("ADMIN_VK_IDS") or "").split(","):
+        part = part.strip()
+        if part.isdigit():
+            ids.add(int(part))
+    return ids
+
+
 # Публичный адрес панели. Боту он нужен, чтобы дать ссылку на полный текст
 # согласия и политику: в чате их не разместишь, а показать до сбора данных
 # обязаны. Тот же адрес читает web_panel — держите значения одинаковыми.

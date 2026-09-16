@@ -188,6 +188,15 @@ def test_launch_without_vk_ts_is_rejected():
     assert web_panel.vk_launch_user_id(args, SECRET) is None
 
 
+def test_launch_without_app_id_config_is_rejected(monkeypatch):
+    """Секрет без VK_APP_ID — бесшовный вход выключен: чужой app_id не отфильтровать."""
+    from urllib.parse import parse_qsl
+
+    monkeypatch.setattr(web_panel, "VK_APP_ID", 0)
+    args = dict(parse_qsl(launch_params()))
+    assert web_panel.vk_launch_user_id(args, SECRET) is None
+
+
 def test_tampered_user_id_is_rejected(client):
     """Подмена vk_user_id в подписанной строке ломает подпись — так и должно быть."""
     params = launch_params(uid=USER).replace(f"vk_user_id={USER}", "vk_user_id=1")
