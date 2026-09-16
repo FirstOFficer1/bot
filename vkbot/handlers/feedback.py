@@ -1,36 +1,52 @@
-"""Хендлер раздела «Обратная связь»."""
+"""Обратная связь пользователя → тикет техподдержки."""
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
 from .. import sender
 from ..config import MAX_INPUT_LEN, env_owner_ids
+from ..ids import is_telegram, to_telegram
 from ..keyboards import CANCEL_KB, MAIN_KB
-from ..models import panel_users
+from ..models import panel_users, tickets
 from ..state import store
 
 _FEEDBACK_COOLDOWN_SEC = 60
 _last_feedback_at: dict[int, float] = {}
 
 
-def _feedback_recipients() -> list[int]:
-    """Все владельцы: env-якорь плюс co-owners из панели."""
+def _ticket_recipients() -> list[int]:
+    """Специалисты support; если никого нет — владельцы (env + панель)."""
+    try:
+        ids = set(panel_users.support_ids())
+    except Exception:
+        logging.exception("Не удалось прочитать support")
+        ids = set()
+    if ids:
+        return sorted(ids)
     ids = set(env_owner_ids())
     try:
         ids |= panel_users.owner_ids()
     except Exception:
-        logging.exception("Не удалось прочитать владельцев для фидбэка")
+        logging.exception("Не удалось прочитать владельцев для тикетов")
     return sorted(ids)
+
+
+def _user_label(uid: int) -> str:
+    if is_telegram(uid):
+        return f"Telegram id{to_telegram(uid)}"
+    return f"[id{uid}|id{uid}]"
 
 
 async def try_handle(bot, message, state, text, uid) -> bool:
     if text == "💬 Обратная связь":
         store[uid] = "feedback"
         await message.answer(
-            "💬 Напиши своё предложение, вопрос или сообщение об ошибке.\n"
-            "Мы постараемся рассмотреть его как можно скорее.",
+            "💬 Напиши вопрос или опиши проблему — создадим обращение "
+            "в техподдержку.\n"
+            "Если уже есть открытый тикет, сообщение добавится к нему.",
             keyboard=CANCEL_KB,
         )
         return True
@@ -54,7 +70,6 @@ async def try_handle(bot, message, state, text, uid) -> bool:
         )
         return True
 
-    # Rate-limit: одно сообщение от пользователя в минуту
     now_ts = time.time()
     last = _last_feedback_at.get(uid, 0.0)
     if now_ts - last < _FEEDBACK_COOLDOWN_SEC:
@@ -66,17 +81,25 @@ async def try_handle(bot, message, state, text, uid) -> bool:
     _last_feedback_at[uid] = now_ts
 
     store.pop(uid, None)
-    await message.answer("✅ Спасибо! Твоё сообщение получено.", keyboard=MAIN_KB)
-    from ..ids import is_telegram, to_telegram
+    ticket = await asyncio.to_thread(tickets.open_or_get, uid)
+    await asyncio.to_thread(
+        tickets.add_message, ticket["id"], uid, tickets.DIR_USER, text
+    )
 
-    if is_telegram(uid):
-        who = f"Telegram id{to_telegram(uid)}"
-    else:
-        who = f"[id{uid}|id{uid}]"
-    body = f"💬 Новый фидбэк от {who}:\n\n{text}"
-    for owner_id in _feedback_recipients():
+    await message.answer(
+        f"✅ Обращение №{ticket['id']} принято. Ответ придёт сюда же.",
+        keyboard=MAIN_KB,
+    )
+    body = (
+        f"🎫 Тикет #{ticket['id']} от {_user_label(uid)}:\n\n{text}\n\n"
+        f"Ответить: напиши «Ответить {ticket['id']}»\n"
+        f"Закрыть: «Закрыть {ticket['id']}»"
+    )
+    for staff_id in _ticket_recipients():
         try:
-            await sender.send(bot, owner_id, body)
+            await sender.send(bot, staff_id, body)
         except Exception:
-            logging.exception("Не удалось переслать фидбэк владельцу %s", owner_id)
+            logging.exception(
+                "Не удалось переслать тикет #%s → %s", ticket["id"], staff_id
+            )
     return True

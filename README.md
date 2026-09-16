@@ -111,6 +111,11 @@ cp deploy/vkbot.service deploy/vkpanel.service /etc/systemd/system/
 systemctl daemon-reload && systemctl enable --now vkbot vkpanel
 journalctl -u vkbot -u vkpanel -f
 
+# Telegram-бот (нужны TELEGRAM_BOT_TOKEN в .env и pip install -r requirements-telegram.txt)
+cp deploy/tgbot.service /etc/systemd/system/
+systemctl daemon-reload && systemctl enable --now tgbot
+# иконка в футере панели: TELEGRAM_BOT_URL=https://t.me/YourBot
+
 cp deploy/vkbot-backup.service deploy/vkbot-backup.timer /etc/systemd/system/
 systemctl daemon-reload && systemctl enable --now vkbot-backup.timer
 
@@ -127,9 +132,11 @@ certbot --nginx -d elschedule.ru -d www.elschedule.ru
 cd /root/vkbot && bash deploy/deploy.sh
 ```
 
-Скрипт подтягивает `origin/main`, перезапускает оба сервиса и ждёт, пока
-`/healthz` ответит 200 — то есть пока БД откроется, а все воркеры бота отметятся.
-Не дождался — возвращает 1 и подсказывает, что смотреть в журнале.
+Скрипт подтягивает `origin/main`, ставит зависимости (включая telegram при наличии
+`requirements-telegram.txt`), перезапускает `vkbot`/`vkpanel`/`tgbot` (если unit
+есть) и ждёт, пока `/healthz` ответит 200 — то есть пока БД откроется, а все
+воркеры бота отметятся. Не дождался — возвращает 1 и подсказывает, что смотреть
+в журнале.
 
 Бэкапы ставятся оттуда же: `vkbot-backup.service` и таймер к нему — ежедневно
 в 04:30, хранение 14 дней, с проверкой целостности копий.

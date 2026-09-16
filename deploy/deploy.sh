@@ -19,8 +19,21 @@ echo "[deploy] было:  $(git rev-parse --short HEAD)"
 git pull --ff-only origin main
 echo "[deploy] стало: $(git rev-parse --short HEAD)"
 
+echo "[deploy] зависимости..."
+# shellcheck disable=SC1091
+source venv/bin/activate
+pip install -q -r requirements.txt
+if [[ -f requirements-telegram.txt ]]; then
+  pip install -q -r requirements-telegram.txt
+fi
+
 echo "[deploy] перезапуск vkbot и vkpanel..."
 systemctl restart vkbot.service vkpanel.service
+
+if systemctl list-unit-files tgbot.service 2>/dev/null | grep -q tgbot.service; then
+  echo "[deploy] перезапуск tgbot..."
+  systemctl restart tgbot.service || echo "[deploy] tgbot: рестарт не удался (проверьте token/unit)"
+fi
 
 # /healthz отвечает 200 только когда открывается БД и все воркеры бота отметились
 # свежим heartbeat. Сразу после рестарта отметок ещё нет, поэтому даём время.
@@ -30,6 +43,9 @@ for _ in $(seq 1 30); do
     if [ "$code" = "200" ]; then
         echo " — 200"
         systemctl is-active vkbot.service vkpanel.service
+        if systemctl list-unit-files tgbot.service 2>/dev/null | grep -q tgbot.service; then
+          systemctl is-active tgbot.service || true
+        fi
         echo "[deploy] готово."
         exit 0
     fi
@@ -41,5 +57,6 @@ echo " — не дождались (последний код: ${code:-нет о
 echo "[deploy] СБОЙ. Что смотреть:"
 echo "  journalctl -u vkpanel -n 50 --no-pager"
 echo "  journalctl -u vkbot -n 50 --no-pager"
+echo "  journalctl -u tgbot -n 50 --no-pager"
 echo "  curl -s $HEALTH_URL   # какой именно воркер молчит"
 exit 1

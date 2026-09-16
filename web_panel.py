@@ -395,7 +395,7 @@ def _is_owner(uid: int | None) -> bool:
 
 
 def _is_admin(uid: int | None) -> bool:
-    """Owner всегда admin. Иначе — смотрим panel_users."""
+    """Owner всегда admin. Иначе — роль admin/owner в panel_user_roles."""
     if uid is None:
         return False
     if uid in OWNER_VK_IDS:
@@ -406,12 +406,24 @@ def _is_admin(uid: int | None) -> bool:
         return False
 
 
+def _is_support(uid: int | None) -> bool:
+    if uid is None:
+        return False
+    if uid in OWNER_VK_IDS:
+        return True
+    try:
+        return panel_users.is_support(uid) or panel_users.is_owner(uid)
+    except Exception:
+        return False
+
+
 def _build_user(uid: int) -> dict:
     """Собирает свежий снимок пользователя для g.user."""
     return {
         "vk_id": uid,
         "is_admin": _is_admin(uid),
         "is_owner": _is_owner(uid),
+        "is_support": _is_support(uid),
         "name": vk_names.resolve_one(uid),
     }
 
@@ -461,6 +473,8 @@ VK_GROUP_ID = _bot_config.int_env("VK_GROUP_ID")
 SUPPORT_URL = os.getenv("SUPPORT_URL") or (
     f"https://vk.com/im?sel=-{VK_GROUP_ID}" if VK_GROUP_ID else "https://vk.com/im"
 )
+# Публичная ссылка на Telegram-бота (иконка в футере). Пусто — иконку не показываем.
+TELEGRAM_BOT_URL = (os.getenv("TELEGRAM_BOT_URL") or "").rstrip("/")
 
 VK_APP_ID = _bot_config.int_env("VK_APP_ID")
 
@@ -1131,7 +1145,14 @@ _BASE_TPL = """
     .role-pill.owner { background: linear-gradient(135deg, #F4C245, #C99A21); color: #3B2C05; }
     /* Нейтраль вместо indigo — акцент вуза остаётся единственным цветным якорем. */
     .role-pill.admin { background: var(--surface-3); color: var(--text); border: 1px solid var(--border-strong); }
+    .role-pill.support { background: color-mix(in srgb, #0A66C2 18%, var(--surface-3)); color: #0A66C2; border: 1px solid color-mix(in srgb, #0A66C2 35%, var(--border)); }
     .role-pill.user  { background: var(--surface-3); color: var(--text-2); }
+    .tg-ico {
+      display: inline-flex; align-items: center; gap: 6px;
+      color: var(--text-3); text-decoration: none;
+    }
+    .tg-ico:hover { color: #0A66C2; }
+    .tg-ico svg { width: 16px; height: 16px; flex: none; }
 
     /* ============================================================
        Main area
@@ -1866,9 +1887,11 @@ _BASE_TPL = """
           <div class="sb-user-id"><a href="https://vk.com/id{{ vk_id }}" target="_blank">vk.com/id{{ vk_id }}</a></div>
         {% endif %}
       </div>
-      {% if is_owner %}<span class="role-pill owner">owner</span>
-      {% elif is_admin %}<span class="role-pill admin">admin</span>
-      {% else %}<span class="role-pill user">user</span>{% endif %}
+      {% if is_owner %}<span class="role-pill owner">owner</span>{% endif %}
+      {% if is_admin and not is_owner %}<span class="role-pill admin">admin</span>{% endif %}
+      {% if is_owner %}<span class="role-pill admin">admin</span>{% endif %}
+      {% if is_support %}<span class="role-pill support">support</span>{% endif %}
+      {% if not is_owner and not is_admin and not is_support %}<span class="role-pill user">user</span>{% endif %}
     </div>
     <form method="post" action="{{ url_for('logout') }}" style="margin:0;">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -1889,6 +1912,16 @@ _BASE_TPL = """
     <a href="{{ url_for('terms') }}">Условия использования</a>
     <span aria-hidden="true">·</span>
     <a href="{{ support_url }}" target="_blank" rel="noopener">Написать в поддержку</a>
+    {% if telegram_bot_url %}
+    <span aria-hidden="true">·</span>
+    <a class="tg-ico" href="{{ telegram_bot_url }}" target="_blank" rel="noopener"
+       title="Telegram-бот" aria-label="Открыть Telegram-бота">
+      <svg viewBox="0 0 24 24" aria-hidden="true" fill="currentColor">
+        <path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/>
+      </svg>
+      Telegram
+    </a>
+    {% endif %}
   </footer>
 {% endmacro %}
 
@@ -2198,6 +2231,16 @@ _LOGIN_TPL = """
       <a href="{{ url_for('privacy') }}" style="color:inherit;">Политика конфиденциальности</a>
       ·
       <a href="{{ url_for('terms') }}" style="color:inherit;">Условия использования</a>
+      {% if telegram_bot_url %}
+      ·
+      <a class="tg-ico" href="{{ telegram_bot_url }}" target="_blank" rel="noopener"
+         style="color:inherit;" title="Telegram-бот" aria-label="Telegram-бот">
+        <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="currentColor" style="vertical-align:-2px;">
+          <path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/>
+        </svg>
+        Telegram
+      </a>
+      {% endif %}
     </div>
   </div>
 </body>
@@ -3477,6 +3520,7 @@ def _render_page(title: str, content_tpl: str, **ctx):
     role_ctx = {
         "is_admin": bool(user.get("is_admin")),
         "is_owner": bool(user.get("is_owner")),
+        "is_support": bool(user.get("is_support")),
         "vk_id": user.get("vk_id"),
         "display_name": user.get("name"),
     }
@@ -3515,7 +3559,7 @@ def login():
     # «Введите код на t.me/…» в официальной рамке страницы).
     err_key = (request.args.get("error") or "").strip()
     error = _LOGIN_ERRORS.get(err_key)
-    return render_template_string(_LOGIN_TPL, error=error)
+    return render_template_string(_LOGIN_TPL, error=error, telegram_bot_url=TELEGRAM_BOT_URL)
 
 
 # ── Юридические страницы (публичные, нужны для модерации VK) ───────────────────
@@ -4604,6 +4648,7 @@ def _type_short(value: str | None) -> str:
 
 app.jinja_env.globals["type_short"] = _type_short
 app.jinja_env.globals["support_url"] = SUPPORT_URL
+app.jinja_env.globals["telegram_bot_url"] = TELEGRAM_BOT_URL
 # Сколько минут до пары приходит уведомление — в текстах про подписку
 # должно стоять то же число, что реально использует воркер.
 app.jinja_env.globals["notify_before_min"] = _bot_config.CLASS_NOTIFY_BEFORE_MIN
@@ -4952,10 +4997,11 @@ def _aggregate_users(search: str = "") -> list[dict]:
 
     # Резолвим имена пачкой
     names = vk_names.resolve(users.keys())
-    # admin-role lookup в одном SQL
-    admin_ids: set[int] = set()
+    # admin/support/owner lookup
+    role_map: dict[int, set[str]] = {}
     try:
-        admin_ids = {u["vk_id"] for u in panel_users.list_all()}
+        for u in panel_users.list_all():
+            role_map[u["vk_id"]] = set(u.get("roles") or [])
     except Exception:
         pass
     owner_ids = _all_owner_ids()
@@ -4965,14 +5011,19 @@ def _aggregate_users(search: str = "") -> list[dict]:
     for uid, u in users.items():
         name = names.get(uid, f"id{uid}")
         if s:
-            # ищем по ID или по имени
             if s not in str(uid) and s not in name.lower():
                 continue
         u["name"] = name
+        roles = set(role_map.get(uid, set()))
         if uid in owner_ids:
+            roles.add("owner")
+        u["roles"] = sorted(roles)
+        if "owner" in roles:
             u["role"] = "owner"
-        elif uid in admin_ids:
+        elif "admin" in roles:
             u["role"] = "admin"
+        elif "support" in roles:
+            u["role"] = "support"
         else:
             u["role"] = "user"
         out.append(u)
@@ -5033,35 +5084,60 @@ _USERS_CONTENT = """
             <td class="text-center d-none d-sm-table-cell">{{ u.counts.deadlines or 0 }}</td>
             <td class="text-center">{{ u.counts.subscriptions or 0 }}</td>
             <td>
-              {% if u.role == 'owner' %}
+              {% if u.role == 'owner' or 'owner' in (u.roles or []) %}
                 <span class="role-pill owner">owner</span>
-              {% elif u.role == 'admin' %}
+              {% endif %}
+              {% if u.role == 'admin' or 'admin' in (u.roles or []) %}
                 <span class="badge bg-success">admin</span>
-              {% else %}
+              {% endif %}
+              {% if 'support' in (u.roles or []) or u.role == 'support' %}
+                <span class="role-pill support">support</span>
+              {% endif %}
+              {% if u.role == 'user' and not (u.roles or []) %}
                 <span class="badge bg-secondary">user</span>
               {% endif %}
             </td>
             {% if is_owner %}
             <td class="text-end" style="white-space:nowrap;">
-              {% if u.role == 'user' %}
+              {% if u.role == 'user' or (u.role == 'support' and 'admin' not in (u.roles or [])) %}
                 <form method="post" action="{{ url_for('admin_grant') }}" class="d-inline"
                       data-confirm="Дать админа {{ u.name }} (id{{ u.vk_id }})?">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                   <input type="hidden" name="vk_id" value="{{ u.vk_id }}">
                   <input type="hidden" name="name" value="{{ u.name }}">
                   <input type="hidden" name="next" value="{{ self_url }}">
                   <button class="btn btn-sm btn-success">🛡️ Дать админа</button>
                 </form>
-              {% elif u.role == 'admin' %}
+              {% endif %}
+              {% if 'admin' in (u.roles or []) and u.role != 'owner' and 'owner' not in (u.roles or []) %}
                 <form method="post" action="{{ url_for('admin_revoke') }}" class="d-inline"
                       data-confirm="Убрать админа у {{ u.name }}?">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                   <input type="hidden" name="vk_id" value="{{ u.vk_id }}">
                   <input type="hidden" name="next" value="{{ self_url }}">
-                  <button class="btn btn-sm btn-outline-secondary" style="color:#DC2626;border-color:color-mix(in srgb,#DC2626 30%, var(--border));">✖ Убрать</button>
+                  <button class="btn btn-sm btn-outline-secondary" style="color:#DC2626;border-color:color-mix(in srgb,#DC2626 30%, var(--border));">✖ Убрать админа</button>
                 </form>
-              {% elif u.role == 'owner' %}
-                <span class="text-muted small">не удаляется</span>
+              {% endif %}
+              {% if 'support' not in (u.roles or []) and u.role != 'support' %}
+                <form method="post" action="{{ url_for('support_grant') }}" class="d-inline"
+                      data-confirm="Дать support {{ u.name }}?">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <input type="hidden" name="vk_id" value="{{ u.vk_id }}">
+                  <input type="hidden" name="name" value="{{ u.name }}">
+                  <input type="hidden" name="next" value="{{ self_url }}">
+                  <button class="btn btn-sm btn-outline-primary">🎧 Support</button>
+                </form>
+              {% else %}
+                <form method="post" action="{{ url_for('support_revoke') }}" class="d-inline"
+                      data-confirm="Снять support у {{ u.name }}?">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <input type="hidden" name="vk_id" value="{{ u.vk_id }}">
+                  <input type="hidden" name="next" value="{{ self_url }}">
+                  <button class="btn btn-sm btn-outline-secondary">✖ Support</button>
+                </form>
+              {% endif %}
+              {% if u.role == 'owner' or 'owner' in (u.roles or []) %}
+                <span class="text-muted small">owner</span>
               {% endif %}
             </td>
             {% endif %}
@@ -5218,7 +5294,12 @@ _ADMINS_CONTENT = """
                  class="text-decoration-none">{{ a.name or ('id' ~ a.vk_id) }}</a>
             </td>
             <td class="d-none d-sm-table-cell text-muted small">{{ a.vk_id }}</td>
-            <td><span class="badge bg-success">admin</span></td>
+            <td>
+              <span class="badge bg-success">admin</span>
+              {% if 'support' in (a.roles or []) %}
+                <span class="role-pill support">support</span>
+              {% endif %}
+            </td>
             <td class="d-none d-md-table-cell text-muted small">{{ a.added_at }}</td>
             <td class="text-end">
               <form method="post" action="{{ url_for('admin_revoke') }}"
@@ -5240,6 +5321,75 @@ _ADMINS_CONTENT = """
     </div>
   </div>
 </div>
+
+<div class="card mb-4 mt-4">
+  <div class="card-header fw-semibold">🎧 Выдать техподдержку (support)</div>
+  <div class="card-body">
+    <form method="post" action="{{ url_for('support_grant') }}" class="row g-2 align-items-center">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="col-sm-6 col-md-5">
+        <input aria-label="VK ID или имя" type="text" name="query" class="form-control" required autocomplete="off"
+               list="grantUsers"
+               placeholder="VK ID, vk.com/id…, или имя из бота">
+      </div>
+      <div class="col-auto">
+        <button class="btn btn-primary">🎧 Выдать support</button>
+      </div>
+    </form>
+    <div class="form-text small mt-2">
+      Специалист получает тикеты из «Обратная связь» в VK-боте и отвечает
+      командами «Ответить N» / «Закрыть N». Step-up код не нужен.
+      Можно совмещать с admin.
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header fw-semibold d-flex justify-content-between">
+    <span>Специалисты support</span>
+    <span class="badge bg-secondary">{{ support_staff|length }}</span>
+  </div>
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table mb-0 align-middle">
+        <thead class="table-light">
+          <tr>
+            <th>Имя</th>
+            <th class="d-none d-sm-table-cell">VK ID</th>
+            <th>Роли</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for s in support_staff %}
+          <tr>
+            <td>
+              <a href="https://vk.com/id{{ s.vk_id }}" target="_blank"
+                 class="text-decoration-none">{{ s.name or ('id' ~ s.vk_id) }}</a>
+            </td>
+            <td class="d-none d-sm-table-cell text-muted small">{{ s.vk_id }}</td>
+            <td>
+              <span class="role-pill support">support</span>
+              {% if 'admin' in (s.roles or []) %}<span class="badge bg-success">admin</span>{% endif %}
+              {% if 'owner' in (s.roles or []) %}<span class="role-pill owner">owner</span>{% endif %}
+            </td>
+            <td class="text-end">
+              <form method="post" action="{{ url_for('support_revoke') }}" class="d-inline"
+                    data-confirm="Снять support у {{ s.name or s.vk_id }}?">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="hidden" name="vk_id" value="{{ s.vk_id }}">
+                <button class="btn btn-sm btn-outline-secondary">✖ Снять support</button>
+              </form>
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="4" class="text-muted p-3">Пока никого. Тикеты уходят владельцам.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
 """
 
 
@@ -5248,14 +5398,28 @@ _ADMINS_CONTENT = """
 def admins_page():
     raw = panel_users.list_all()
     db_owners = _db_owner_ids()
-    all_ids = {a["vk_id"] for a in raw} | OWNER_VK_IDS
+    all_ids = {a["vk_id"] for a in raw} | OWNER_VK_IDS | panel_users.support_ids()
     names = vk_names.resolve(all_ids)
     admins = []
     for a in raw:
-        # Владельцы (и из env, и выданные в панели) идут отдельным блоком выше.
+        roles = set(a.get("roles") or [])
         if a["vk_id"] in OWNER_VK_IDS or a["vk_id"] in db_owners:
             continue
-        admins.append({**a, "name": names.get(a["vk_id"], a.get("name") or f"id{a['vk_id']}")})
+        if "admin" not in roles:
+            continue
+        admins.append({
+            **a,
+            "name": names.get(a["vk_id"], a.get("name") or f"id{a['vk_id']}"),
+            "roles": sorted(roles),
+        })
+    support_staff = []
+    for vid in sorted(panel_users.support_ids()):
+        roles = panel_users.roles_of(vid)
+        support_staff.append({
+            "vk_id": vid,
+            "name": names.get(vid, f"id{vid}"),
+            "roles": sorted(roles),
+        })
     owners = [
         {"vk_id": uid, "name": names.get(uid, f"id{uid}"), "source": "env"}
         for uid in sorted(OWNER_VK_IDS)
@@ -5263,7 +5427,6 @@ def admins_page():
         {"vk_id": uid, "name": names.get(uid, f"id{uid}"), "source": "panel"}
         for uid in sorted(db_owners - OWNER_VK_IDS)
     ]
-    # Для datalist автодополнения — все юзеры бота с ролями
     try:
         known_users = _aggregate_users()
     except Exception:
@@ -5272,7 +5435,8 @@ def admins_page():
     return _render_page(
         "Управление админами",
         _ADMINS_CONTENT,
-        admins=admins, owners=owners, flash=flash, flash_kind=_flash_kind(),
+        admins=admins, owners=owners, support_staff=support_staff,
+        flash=flash, flash_kind=_flash_kind(),
         known_users=known_users,
     )
 
@@ -5387,6 +5551,59 @@ def admin_revoke():
     audit.log(actor, "admin.revoke", f"id{vk_id}", name)
     _notify_owners(f"🛡️ Панель: id{actor} снял права админа с {name} (id{vk_id}).")
     return redirect(_with_flash(next_url, f"✖ {name} (id{vk_id}) снят с админов", "success"))
+
+
+@app.route("/admin/support/grant", methods=["POST"])
+@owner_required
+def support_grant():
+    """Выдаёт роль support без step-up (не передача владения)."""
+    next_url = _safe_next(request.form.get("next"), url_for("admins_page"))
+    actor = _current_vk_id() or 0
+    raw_vk = (request.form.get("vk_id") or "").strip()
+    raw_query = (request.form.get("query") or "").strip()
+
+    if raw_query and not raw_vk.isdigit():
+        vk_id, name, err = _resolve_grant_target(raw_query)
+        if err or vk_id is None:
+            return redirect(_with_flash(next_url, err or "Не удалось распознать получателя", "danger"))
+    else:
+        try:
+            vk_id = int(raw_vk)
+        except (TypeError, ValueError):
+            return redirect(_with_flash(next_url, "Некорректный VK ID", "danger"))
+        if vk_id <= 0:
+            return redirect(_with_flash(next_url, "Некорректный VK ID", "danger"))
+        name = (request.form.get("name") or vk_names.resolve_one(vk_id)).strip()
+
+    if panel_users.is_support(vk_id):
+        return redirect(_with_flash(next_url, f"{name} уже support.", "info"))
+
+    panel_users.grant_role(
+        vk_id, panel_users.ROLE_SUPPORT, granted_by=actor, name=name
+    )
+    audit.log(actor, "admin.support_grant", f"id{vk_id}", name)
+    return redirect(
+        _with_flash(next_url, f"🎧 {name} (id{vk_id}) теперь support", "success")
+    )
+
+
+@app.route("/admin/support/revoke", methods=["POST"])
+@owner_required
+def support_revoke():
+    next_url = _safe_next(request.form.get("next"), url_for("admins_page"))
+    actor = _current_vk_id() or 0
+    try:
+        vk_id = int(request.form.get("vk_id") or 0)
+    except (TypeError, ValueError):
+        return redirect(_with_flash(next_url, "Некорректный VK ID", "danger"))
+    if not panel_users.is_support(vk_id):
+        return redirect(_with_flash(next_url, "У пользователя нет роли support.", "info"))
+    panel_users.revoke_role(vk_id, panel_users.ROLE_SUPPORT)
+    name = vk_names.resolve_one(vk_id)
+    audit.log(actor, "admin.support_revoke", f"id{vk_id}", name)
+    return redirect(
+        _with_flash(next_url, f"✖ Support снят с {name} (id{vk_id})", "success")
+    )
 
 
 # ── Владение панелью ──────────────────────────────────────────────────────────

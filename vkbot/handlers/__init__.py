@@ -20,6 +20,7 @@ from . import (
     reminders,
     schedule,
     subscriptions,
+    support,
 )
 from ..state import store
 
@@ -27,11 +28,14 @@ from ..state import store
 # данные не на чем, поэтому оно перехватывает вообще всё, включая приветствие.
 # Хендлер, поставленный выше него, окажется доступен без согласия.
 # Дальше common перехватывает "Меню" / приветствие.
+# support — сразу после panel_login: специалисты отвечают командами, не проходя
+# пользовательские разделы.
 _PIPELINE = (
     consent.try_handle,
     common.try_intro,
     common.try_category,
     panel_login.try_handle,
+    support.try_handle,
     schedule.try_handle,
     notes.try_handle,
     reminders.try_handle,

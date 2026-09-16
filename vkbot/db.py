@@ -100,6 +100,35 @@ def init() -> None:
                 added_at TEXT NOT NULL,
                 added_by INTEGER
             );
+            CREATE TABLE IF NOT EXISTS panel_user_roles (
+                vk_id INTEGER NOT NULL,
+                role TEXT NOT NULL,
+                granted_at TEXT NOT NULL,
+                granted_by INTEGER,
+                PRIMARY KEY (vk_id, role)
+            );
+            CREATE INDEX IF NOT EXISTS idx_panel_user_roles_role
+                ON panel_user_roles(role);
+            CREATE TABLE IF NOT EXISTS support_tickets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'open',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_support_tickets_user
+                ON support_tickets(user_id, status);
+            CREATE TABLE IF NOT EXISTS support_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticket_id INTEGER NOT NULL,
+                author_id INTEGER NOT NULL,
+                direction TEXT NOT NULL,
+                body TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (ticket_id) REFERENCES support_tickets(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_support_messages_ticket
+                ON support_messages(ticket_id);
             CREATE TABLE IF NOT EXISTS seen_users (
                 vk_id INTEGER PRIMARY KEY,
                 first_seen TEXT NOT NULL,
@@ -210,6 +239,28 @@ def init() -> None:
         if "purpose" not in code_cols:
             conn.execute(
                 "ALTER TABLE panel_login_codes ADD COLUMN purpose TEXT NOT NULL DEFAULT 'login'"
+            )
+
+        # Мультироли: копируем panel_users.role → panel_user_roles один раз.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS panel_user_roles ("
+            "  vk_id INTEGER NOT NULL,"
+            "  role TEXT NOT NULL,"
+            "  granted_at TEXT NOT NULL,"
+            "  granted_by INTEGER,"
+            "  PRIMARY KEY (vk_id, role)"
+            ")"
+        )
+        migrated = conn.execute(
+            "SELECT 1 FROM panel_user_roles LIMIT 1"
+        ).fetchone()
+        legacy = conn.execute("SELECT COUNT(*) FROM panel_users").fetchone()[0]
+        if not migrated and legacy:
+            conn.execute(
+                "INSERT OR IGNORE INTO panel_user_roles "
+                "(vk_id, role, granted_at, granted_by) "
+                "SELECT vk_id, role, added_at, added_by FROM panel_users "
+                "WHERE role IN ('admin', 'owner', 'support')"
             )
 
         # CREATE INDEX IF NOT EXISTS не переопределяет уже существующий индекс,
