@@ -9,10 +9,11 @@ import re
 from ..config import MAX_INPUT_LEN, NOTES_LIMIT
 from ..keyboards import BACK_KB, CANCEL_KB, MAIN_KB
 from ..models import notes as model
+from .. import safety
 from ..state import store
 
 
-async def try_handle(_bot, message, state, text, uid) -> bool:
+async def try_handle(bot, message, state, text, uid) -> bool:
     # ── Добавление ────────────────────────────────────────────────────────────
     if text == "📝 Добавить заметку":
         store[uid] = "add_note"
@@ -46,6 +47,7 @@ async def try_handle(_bot, message, state, text, uid) -> bool:
         await asyncio.to_thread(model.add, uid, text)
         store.pop(uid, None)
         await message.answer("✅ Заметка сохранена!", keyboard=MAIN_KB)
+        await safety.maybe_alert(bot, uid, "note", text)
         return True
 
     # ── Список и удаление ────────────────────────────────────────────────────

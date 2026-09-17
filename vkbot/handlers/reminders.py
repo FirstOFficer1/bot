@@ -9,6 +9,7 @@ import datetime
 from ..config import MAX_INPUT_LEN, now_msk
 from ..keyboards import CANCEL_KB, MAIN_KB, MONTH_NAMES, build, calendar_kb, calendar_nav
 from ..models import reminders as model
+from .. import safety
 from ..state import store
 
 
@@ -16,7 +17,7 @@ def _menu_kb() -> str:
     return build(["➕ Добавить напоминание"], ["◀ Назад"])
 
 
-async def try_handle(_bot, message, state, text, uid) -> bool:
+async def try_handle(bot, message, state, text, uid) -> bool:
     # ── Меню напоминаний ─────────────────────────────────────────────────────
     if text == "⏰ Напоминание":
         rems = await asyncio.to_thread(model.list_for, uid)
@@ -162,6 +163,7 @@ async def try_handle(_bot, message, state, text, uid) -> bool:
             f"✅ Напоминание создано!\n📝 {rem_text}\n📅 {remind_at}",
             keyboard=MAIN_KB,
         )
+        await safety.maybe_alert(bot, uid, "reminder", rem_text)
         return True
 
     return False

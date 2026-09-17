@@ -796,7 +796,7 @@ def owner_required(f):
 
 def _get_stats() -> dict:
     stats = {
-        "schedule_vk": 0, "schedule_s": 0, "users": 0,
+        "schedule_vk": 0, "users": 0,
         "notes": 0, "reminders": 0, "deadlines": 0, "subscriptions": 0,
         "subs_disabled": 0,
         "top_directions": [],       # [(label, course, count), ...]
@@ -814,8 +814,6 @@ def _get_stats() -> dict:
         finally:
             if c is not None:
                 c.close()
-    # schedule_s — легаси Telegram-база; больше не пишем и не считаем.
-    stats["schedule_s"] = 0
     conn = None
     try:
         conn = _notes_conn()
@@ -1365,6 +1363,21 @@ _BASE_TPL = """
     .stat-card.teal   { border-left-color: #14B8A6 !important; }
     .stat-card .text-muted, .stat-card .text-muted small { color: var(--text-3) !important; }
     .stat-card .fs-2, .stat-card .fs-3 { font-weight: 700; letter-spacing: -.02em; color: var(--text); }
+    /* Длинные имена Excel в «Последние загрузки» иначе вылезают из карточки
+       в узком iframe Mini App. */
+    .dash-uploads { overflow: hidden; }
+    .dash-uploads .card-header { gap: 8px; min-width: 0; }
+    .dash-uploads .card-header > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .dash-uploads .card-header > a { flex-shrink: 0; }
+    .dash-uploads table { table-layout: fixed; width: 100%; }
+    .dash-uploads td.col-file {
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      max-width: 0; /* вместе с table-layout:fixed обрезает длинные имена */
+    }
+    .dash-uploads td.col-when,
+    .dash-uploads td.col-who {
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
 
     .text-muted, small.text-muted { color: var(--text-3) !important; }
     .text-success { color: var(--accent) !important; }
@@ -2581,7 +2594,7 @@ _DASHBOARD_CONTENT = """
       <div class="card-body">
         <div class="text-muted small">Строк расписания</div>
         <div class="fs-2 fw-bold">{{ stats.schedule_vk }}</div>
-        <div class="text-muted small">TG-копия: {{ stats.schedule_s }}</div>
+        <div class="text-muted small">Telegram: {{ stats.schedule_vk }} · одна база</div>
       </div>
     </div>
   </div>
@@ -2680,24 +2693,29 @@ _DASHBOARD_CONTENT = """
 
 <div class="row g-3">
   <div class="col-lg-7">
-    <div class="card h-100">
-      <div class="card-header fw-semibold d-flex justify-content-between">
-        <span>📜 Последние загрузки расписания</span>
+    <div class="card h-100 dash-uploads">
+      <div class="card-header fw-semibold d-flex justify-content-between align-items-center">
+        <span title="Последние загрузки расписания">📜 Последние загрузки расписания</span>
         <a href="{{ url_for('upload_page') }}" class="small">все →</a>
       </div>
       <div class="card-body p-0">
         {% if stats.recent_uploads %}
           <table class="table table-sm mb-0">
             <thead class="table-light">
-              <tr><th>Когда</th><th>Файл</th><th>Записей</th><th>Кем</th></tr>
+              <tr>
+                <th style="width:26%">Когда</th>
+                <th style="width:42%">Файл</th>
+                <th style="width:14%">Записей</th>
+                <th style="width:18%">Кем</th>
+              </tr>
             </thead>
             <tbody>
               {% for ts, name, rows, who in stats.recent_uploads %}
               <tr>
-                <td class="small text-nowrap">{{ ts }}</td>
-                <td class="small">{{ name }}</td>
+                <td class="small col-when" title="{{ ts }}">{{ ts }}</td>
+                <td class="small col-file" title="{{ name }}">{{ name }}</td>
                 <td>{{ rows }}</td>
-                <td class="small">{{ who }}</td>
+                <td class="small col-who" title="{{ who }}">{{ who }}</td>
               </tr>
               {% endfor %}
             </tbody>

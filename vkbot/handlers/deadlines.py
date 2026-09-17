@@ -10,6 +10,7 @@ import datetime
 from ..config import MAX_INPUT_LEN, now_msk
 from ..keyboards import CANCEL_KB, MAIN_KB, MONTH_NAMES, build, calendar_kb, calendar_nav
 from ..models import deadlines as model
+from .. import safety
 from ..state import store
 
 
@@ -28,7 +29,7 @@ def _format_status(delta: datetime.timedelta) -> str:
     return f"🟢 {delta.days} дн."
 
 
-async def try_handle(_bot, message, state, text, uid) -> bool:
+async def try_handle(bot, message, state, text, uid) -> bool:
     # ── Меню дедлайнов ───────────────────────────────────────────────────────
     if text == "📌 Дедлайны":
         deadlines = await asyncio.to_thread(model.list_for, uid)
@@ -215,6 +216,11 @@ async def try_handle(_bot, message, state, text, uid) -> bool:
             f"Напомню за 1 день и за 1 час до срока.",
             keyboard=MAIN_KB,
         )
+        # Предмет + описание — оба свободный текст.
+        blob = "\n".join(
+            p for p in (state.get("dl_subject", ""), state.get("dl_desc", "")) if p
+        )
+        await safety.maybe_alert(bot, uid, "deadline", blob)
         return True
 
     return False
