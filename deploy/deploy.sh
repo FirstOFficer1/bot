@@ -22,12 +22,26 @@ pip install -q -r requirements.txt
 echo "[deploy] перезапуск vkbot и vkpanel..."
 systemctl restart vkbot.service vkpanel.service
 
-# Telegram-бот пока отключён: unit не трогаем. Если когда-то был включён — гасим.
-if systemctl list-unit-files tgbot.service 2>/dev/null | grep -q tgbot.service; then
-  if systemctl is-active --quiet tgbot.service 2>/dev/null; then
-    echo "[deploy] останавливаем tgbot (временно отключён)..."
-    systemctl stop tgbot.service || true
-    systemctl disable tgbot.service || true
+# Telegram: поднимаем, если в .env есть TELEGRAM_BOT_TOKEN.
+TG_TOKEN="$(grep -E '^(TELEGRAM_BOT_TOKEN|TELEGRAM_TOKEN)=' .env 2>/dev/null | head -1 | cut -d= -f2- || true)"
+if [ -n "${TG_TOKEN}" ]; then
+  echo "[deploy] зависимости Telegram..."
+  pip install -q -r requirements-telegram.txt
+  if [ -f deploy/tgbot.service ]; then
+    cp deploy/tgbot.service /etc/systemd/system/tgbot.service
+    systemctl daemon-reload
+    systemctl enable tgbot.service
+    systemctl restart tgbot.service
+    echo "[deploy] tgbot: $(systemctl is-active tgbot.service || true)"
+  fi
+else
+  echo "[deploy] TELEGRAM_BOT_TOKEN пуст — tgbot не трогаем"
+  if systemctl list-unit-files tgbot.service 2>/dev/null | grep -q tgbot.service; then
+    if systemctl is-active --quiet tgbot.service 2>/dev/null; then
+      echo "[deploy] останавливаем tgbot (нет токена)..."
+      systemctl stop tgbot.service || true
+      systemctl disable tgbot.service || true
+    fi
   fi
 fi
 

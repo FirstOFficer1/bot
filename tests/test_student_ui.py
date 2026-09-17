@@ -67,6 +67,31 @@ def test_panel_admin_also_keeps_sidebar(student_client):
     assert 'class="sidebar desktop-sb"' in html
 
 
+def test_owner_sidebar_shows_only_owner_pill(owner_client):
+    """Env-owner не должен выглядеть как owner+admin+support сразу."""
+    html = owner_client.get("/").get_data(as_text=True)
+    # Беру только сайдбар: в CSS тоже есть классы role-pill.*
+    start = html.find('class="sidebar desktop-sb"')
+    end = html.find("</aside>", start)
+    assert start != -1 and end != -1
+    sidebar = html[start:end]
+    assert 'role-pill owner' in sidebar
+    assert 'role-pill admin' not in sidebar
+    assert 'role-pill support' not in sidebar
+
+
+def test_admin_plus_support_shows_both_pills(student_client):
+    panel_users.grant(STUDENT, OWNER, role=panel_users.ROLE_ADMIN)
+    panel_users.grant_role(STUDENT, panel_users.ROLE_SUPPORT, granted_by=OWNER)
+    html = student_client.get("/").get_data(as_text=True)
+    start = html.find('class="sidebar desktop-sb"')
+    end = html.find("</aside>", start)
+    sidebar = html[start:end]
+    assert 'role-pill admin' in sidebar
+    assert 'role-pill support' in sidebar
+    assert 'role-pill owner' not in sidebar
+
+
 def test_login_has_no_indigo_glow():
     web_panel.app.config.update(TESTING=True, WTF_CSRF_ENABLED=False)
     with web_panel.app.test_client() as c:

@@ -407,12 +407,13 @@ def _is_admin(uid: int | None) -> bool:
 
 
 def _is_support(uid: int | None) -> bool:
+    """Явная роль support в БД. Owner/env не подмешиваем — иначе в сайдбаре
+    у владельца всегда три бейджа (owner+admin+support), хотя support не выдавали.
+    Права отвечать на тикеты у владельцев проверяет handlers/support._is_staff."""
     if uid is None:
         return False
-    if uid in OWNER_VK_IDS:
-        return True
     try:
-        return panel_users.is_support(uid) or panel_users.is_owner(uid)
+        return panel_users.is_support(uid)
     except Exception:
         return False
 
@@ -1887,9 +1888,10 @@ _BASE_TPL = """
           <div class="sb-user-id"><a href="https://vk.com/id{{ vk_id }}" target="_blank">vk.com/id{{ vk_id }}</a></div>
         {% endif %}
       </div>
+      {# Фактические роли: owner не раздуваем до admin+support в бейджах.
+         support показываем только если роль реально выдана (см. _is_support). #}
       {% if is_owner %}<span class="role-pill owner">owner</span>{% endif %}
       {% if is_admin and not is_owner %}<span class="role-pill admin">admin</span>{% endif %}
-      {% if is_owner %}<span class="role-pill admin">admin</span>{% endif %}
       {% if is_support %}<span class="role-pill support">support</span>{% endif %}
       {% if not is_owner and not is_admin and not is_support %}<span class="role-pill user">user</span>{% endif %}
     </div>
