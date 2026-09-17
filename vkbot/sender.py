@@ -49,16 +49,30 @@ def _vk_api(bot: Any) -> Any | None:
 async def send(bot: Any, uid: int, text: str) -> bool:
     """Отправляет сообщение. При «пользователь недоступен» — отключает подписки.
 
-    Возвращает True при успехе, False при невосстановимой ошибке.
+    Возвращает True при успехе хотя бы на одном канале.
     Воркер может крутиться в VK- или TG-процессе: выбираем API по знаку uid,
-    а не по типу переданного ``bot``.
+    а не по типу переданного ``bot``. Для связанного аккаунта пуш идёт в оба
+    мессенджера.
     """
-    if is_telegram(uid):
-        return await _send_telegram(uid, text)
-    return await _send_vk(bot, uid, text)
+    from .models import account_links
+
+    targets = account_links.delivery_targets(uid)
+    ok_any = False
+    for i, target in enumerate(targets):
+        # Подписки висят на каноне (первый в списке). Блокировка второго канала
+        # не должна их гасить.
+        disable_subs = i == 0
+        if is_telegram(target):
+            ok = await _send_telegram(target, text, disable_subs=disable_subs)
+        else:
+            ok = await _send_vk(bot, target, text, disable_subs=disable_subs)
+        ok_any = ok_any or ok
+    return ok_any
 
 
-async def _send_vk(bot: Any, uid: int, text: str) -> bool:
+async def _send_vk(
+    bot: Any, uid: int, text: str, *, disable_subs: bool = True
+) -> bool:
     vk = _vk_bot or bot
     messages = _vk_api(vk)
     if messages is None:
@@ -74,19 +88,28 @@ async def _send_vk(bot: Any, uid: int, text: str) -> bool:
     except Exception as e:
         code = getattr(e, "code", None) or getattr(getattr(e, "error", None), "code", None)
         if code in _DISABLED_CODES:
-            from .models import subscriptions
-            # В поток: при массовой рассылке таких отказов бывает много подряд,
-            # и каждый synchronous UPDATE останавливал бы весь event loop.
-            await asyncio.to_thread(subscriptions.disable_all_for_user, uid)
-            logging.info(
-                "User %s disabled bot (VK code %s) — subscriptions deactivated", uid, code
-            )
+            if disable_subs:
+                from .models import subscriptions
+                # В поток: при массовой рассылке таких отказов бывает много подряд,
+                # и каждый synchronous UPDATE останавливал бы весь event loop.
+                await asyncio.to_thread(subscriptions.disable_all_for_user, uid)
+                logging.info(
+                    "User %s disabled bot (VK code %s) — subscriptions deactivated",
+                    uid, code,
+                )
+            else:
+                logging.info(
+                    "VK fan-out uid=%s недоступен (code %s) — подписки не трогаем",
+                    uid, code,
+                )
         else:
             logging.exception("Не удалось отправить сообщение пользователю %s", uid)
         return False
 
 
-async def _send_telegram(uid: int, text: str) -> bool:
+async def _send_telegram(
+    uid: int, text: str, *, disable_subs: bool = True
+) -> bool:
     tg = _tg_bot
     if tg is None:
         logging.error("Telegram bot не зарегистрирован — пуш uid=%s пропущен", uid)
@@ -105,13 +128,19 @@ async def _send_telegram(uid: int, text: str) -> bool:
             "ChatNotFound",
         } or "blocked" in str(e).lower() or "deactivated" in str(e).lower()
         if blocked:
-            from .models import subscriptions
+            if disable_subs:
+                from .models import subscriptions
 
-            await asyncio.to_thread(subscriptions.disable_all_for_user, uid)
-            logging.info(
-                "User %s disabled Telegram bot (%s) — subscriptions deactivated",
-                uid, name,
-            )
+                await asyncio.to_thread(subscriptions.disable_all_for_user, uid)
+                logging.info(
+                    "User %s disabled Telegram bot (%s) — subscriptions deactivated",
+                    uid, name,
+                )
+            else:
+                logging.info(
+                    "TG fan-out uid=%s недоступен (%s) — подписки не трогаем",
+                    uid, name,
+                )
         else:
             logging.exception("Не удалось отправить Telegram-сообщение uid=%s", uid)
         return False

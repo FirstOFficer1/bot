@@ -56,6 +56,7 @@ LABELS = {
     "panel_user_roles": "роли в панели",
     "support_tickets": "обращения в поддержку",
     "support_messages": "сообщения в тикетах",
+    "account_links": "связь VK ↔ Telegram",
     "user_consents": "согласие на обработку данных",
 }
 
@@ -78,6 +79,12 @@ def count_all(uid: int) -> dict[str, int]:
         ).fetchone()[0]
         if n_msg:
             out["support_messages"] = n_msg
+        n_link = conn.execute(
+            "SELECT COUNT(*) FROM account_links WHERE vk_id=? OR telegram_uid=?",
+            (uid, uid),
+        ).fetchone()[0]
+        if n_link:
+            out["account_links"] = n_link
     return out
 
 
@@ -97,6 +104,12 @@ def purge(uid: int) -> dict[str, int]:
             cur = conn.execute(f"DELETE FROM {table} WHERE {column}=?", (uid,))
             if cur.rowcount:
                 removed[table] = cur.rowcount
+        cur = conn.execute(
+            "DELETE FROM account_links WHERE vk_id=? OR telegram_uid=?",
+            (uid, uid),
+        )
+        if cur.rowcount:
+            removed["account_links"] = cur.rowcount
     return removed
 
 
@@ -141,4 +154,12 @@ def export_all(uid: int) -> dict:
         rows = [dict(zip(names, r)) for r in cur.fetchall()]
         if rows:
             out["support_messages"] = rows
+        cur = conn.execute(
+            "SELECT * FROM account_links WHERE vk_id=? OR telegram_uid=?",
+            (uid, uid),
+        )
+        names = [d[0] for d in cur.description] if cur.description else []
+        rows = [dict(zip(names, r)) for r in cur.fetchall()]
+        if rows:
+            out["account_links"] = rows
     return out

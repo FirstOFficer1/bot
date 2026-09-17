@@ -4,7 +4,8 @@
 step-up для передачи владения и наоборот:
 
 * ``login`` — вход на сайт (команда /login в боте);
-* ``step_up`` — подтверждение опасной операции (команда /confirm).
+* ``step_up`` — подтверждение опасной операции (команда /confirm);
+* ``account_link`` — привязка VK ↔ Telegram.
 """
 
 from __future__ import annotations
@@ -20,7 +21,8 @@ CODE_LEN = 8
 
 PURPOSE_LOGIN = "login"
 PURPOSE_STEP_UP = "step_up"
-_PURPOSES = frozenset({PURPOSE_LOGIN, PURPOSE_STEP_UP})
+PURPOSE_LINK = "account_link"
+_PURPOSES = frozenset({PURPOSE_LOGIN, PURPOSE_STEP_UP, PURPOSE_LINK})
 
 # Sliding window: не более RL_MAX_ATTEMPTS неудачных попыток за RL_WINDOW_SEC
 # с одного IP. Счётчик в SQLite — переживает рестарт панели.
@@ -90,13 +92,18 @@ def verify(code: str, *, purpose: str = PURPOSE_LOGIN) -> int | None:
     return int(rows[0][0]) if rows else None
 
 
-def has_recent_code(user_id: int, minutes: int = 60) -> bool:
-    """Выписывался ли этому пользователю код за последние N минут."""
+def has_recent_code(
+    user_id: int, minutes: int = 60, *, purpose: str = PURPOSE_LOGIN
+) -> bool:
+    """Выписывался ли этому пользователю код нужного назначения за N минут."""
+    if purpose not in _PURPOSES:
+        return False
     cutoff = (now_msk() - timedelta(minutes=minutes)).isoformat(timespec="seconds")
     with connect() as conn:
         return conn.execute(
-            "SELECT 1 FROM panel_login_codes WHERE user_id=? AND created_at >= ? LIMIT 1",
-            (user_id, cutoff),
+            "SELECT 1 FROM panel_login_codes "
+            "WHERE user_id=? AND purpose=? AND created_at >= ? LIMIT 1",
+            (user_id, purpose, cutoff),
         ).fetchone() is not None
 
 

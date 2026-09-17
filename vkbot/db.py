@@ -129,6 +129,13 @@ def init() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_support_messages_ticket
                 ON support_messages(ticket_id);
+            CREATE TABLE IF NOT EXISTS account_links (
+                vk_id INTEGER PRIMARY KEY,
+                telegram_uid INTEGER NOT NULL UNIQUE,
+                linked_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_account_links_tg
+                ON account_links(telegram_uid);
             CREATE TABLE IF NOT EXISTS seen_users (
                 vk_id INTEGER PRIMARY KEY,
                 first_seen TEXT NOT NULL,
@@ -262,6 +269,18 @@ def init() -> None:
                 "SELECT vk_id, role, added_at, added_by FROM panel_users "
                 "WHERE role IN ('admin', 'owner', 'support')"
             )
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS account_links ("
+            "  vk_id INTEGER PRIMARY KEY,"
+            "  telegram_uid INTEGER NOT NULL UNIQUE,"
+            "  linked_at TEXT NOT NULL"
+            ")"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_account_links_tg "
+            "ON account_links(telegram_uid)"
+        )
 
         # CREATE INDEX IF NOT EXISTS не переопределяет уже существующий индекс,
         # поэтому на старой БД idx_sent_notifs_lookup остался бы висеть на

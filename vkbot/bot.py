@@ -40,6 +40,15 @@ def main() -> None:
     from . import sender
 
     sender.set_vk_bot(bot)
+    if config.TELEGRAM_BOT_TOKEN:
+        try:
+            from aiogram import Bot as TgBot
+
+            sender.set_telegram_bot(TgBot(token=config.TELEGRAM_BOT_TOKEN))
+        except Exception:
+            logging.exception(
+                "Не удалось зарегистрировать Telegram sender для fan-out"
+            )
     bot.loop_wrapper.add_task(reminders.run(bot))
     bot.loop_wrapper.add_task(deadlines.run(bot))
     bot.loop_wrapper.add_task(classes.run(bot))

@@ -120,6 +120,8 @@ def test_deletion_is_recorded_in_audit(client):
 def test_every_user_table_is_covered():
     """Новая таблица с данными пользователя должна попасть в purge()."""
     known = {table for table, _col in user_data._USER_TABLES}
+    # Чистятся в purge() отдельно (нет одной колонки user_id / или FK).
+    known |= {"account_links", "support_messages"}
     # Таблицы без данных конкретного человека — их отсутствие в списке осознанно.
     not_personal = {
         "schedule_versions", "sqlite_sequence", "worker_heartbeats",

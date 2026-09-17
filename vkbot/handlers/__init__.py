@@ -11,6 +11,7 @@ from __future__ import annotations
 from vkbottle.bot import Message
 
 from . import (
+    account_link,
     common,
     consent,
     deadlines,
@@ -23,6 +24,7 @@ from . import (
     subscriptions,
     support,
 )
+from ..models import account_links
 from ..state import store
 
 # Порядок имеет значение. Первым идёт согласие: пока его нет, обрабатывать
@@ -35,6 +37,7 @@ _PIPELINE = (
     consent.try_handle,
     common.try_intro,
     common.try_category,
+    account_link.try_handle,
     panel_login.try_handle,
     support.try_handle,
     schedule.try_handle,
@@ -51,11 +54,21 @@ _PIPELINE = (
     common.fallback,
 )
 
+# Привязка смотрит на реальный peer (VK или TG), а не на канонический vk_id —
+# иначе redeem после merge не поймёт, кого связывать.
+_PEER_UID_HANDLERS = frozenset({account_link.try_handle})
 
-async def dispatch_pipeline(bot, message, uid: int, text: str) -> None:
-    """Общий пайплайн для VK и Telegram: первый ``True`` останавливает цепочку."""
-    state = store.get(uid)
+
+async def dispatch_pipeline(bot, message, peer_uid: int, text: str) -> None:
+    """Общий пайплайн для VK и Telegram: первый ``True`` останавливает цепочку.
+
+    ``peer_uid`` — кто написал (для TG отрицательный). Данные после привязки
+    живут на каноническом VK id.
+    """
+    data_uid = account_links.canonical_uid(peer_uid)
     for handler in _PIPELINE:
+        uid = peer_uid if handler in _PEER_UID_HANDLERS else data_uid
+        state = store.get(uid if handler in _PEER_UID_HANDLERS else data_uid)
         if await handler(bot, message, state, text, uid):
             return
 
