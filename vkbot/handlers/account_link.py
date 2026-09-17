@@ -21,6 +21,8 @@ _MODE_MENU = "account_link_menu"
 _MODE_ENTER = "account_link_enter"
 
 LINK_MENU_KB = build([GET_CODE], [ENTER_CODE], ["❌ Отмена"], one_time=True)
+# В Telegram код берут в VK — «Получить код» здесь только путает.
+TG_LINK_MENU_KB = build([ENTER_CODE], ["❌ Отмена"], one_time=True)
 LINKED_KB = build([UNLINK_BTN], ["🏠 Меню"], one_time=True)
 ENTER_KB = build(["❌ Отмена"], one_time=True)
 
@@ -31,13 +33,27 @@ def _other_platform(uid: int) -> str:
     return "Telegram-боте" if is_vk(uid) else "VK-боте"
 
 
+def _link_menu_kb(uid: int) -> str:
+    return TG_LINK_MENU_KB if is_telegram(uid) else LINK_MENU_KB
+
+
+async def _after_cancel(message, uid: int) -> None:
+    """После отмены: TG без связи — снова к вопросу про VK, иначе «Прочее»."""
+    from . import tg_vk_gate
+
+    if await asyncio.to_thread(tg_vk_gate.needs_vk_link, uid):
+        await tg_vk_gate.offer(message)
+    else:
+        await message.answer("Отменено.", keyboard=MISC_KB)
+
+
 async def try_handle(_bot, message, state, text, uid) -> bool:
     text = (text or "").strip()
 
     if isinstance(state, dict) and state.get("mode") == _MODE_ENTER:
         if text in ("❌ Отмена", "🏠 Меню", "Отмена"):
             store.pop(uid, None)
-            await message.answer("Отменено.", keyboard=MISC_KB)
+            await _after_cancel(message, uid)
             return True
         m = _CODE_RE.match(text)
         if not m:
@@ -52,9 +68,16 @@ async def try_handle(_bot, message, state, text, uid) -> bool:
     if isinstance(state, dict) and state.get("mode") == _MODE_MENU:
         if text in ("❌ Отмена", "🏠 Меню", "Отмена"):
             store.pop(uid, None)
-            await message.answer("Отменено.", keyboard=MISC_KB)
+            await _after_cancel(message, uid)
             return True
         if text == GET_CODE:
+            if is_telegram(uid):
+                await message.answer(
+                    "Код нужно взять в VK-боте, а сюда — только ввести.\n"
+                    "Нажми «✏️ Ввести код».",
+                    keyboard=TG_LINK_MENU_KB,
+                )
+                return True
             return await _issue(message, uid)
         if text == ENTER_CODE:
             store[uid] = {"mode": _MODE_ENTER}
@@ -65,8 +88,19 @@ async def try_handle(_bot, message, state, text, uid) -> bool:
             return True
         if text == UNLINK_BTN:
             return await _unlink(message, uid)
-        await message.answer("Выбери кнопку ниже.", keyboard=LINK_MENU_KB)
+        await message.answer("Выбери кнопку ниже.", keyboard=_link_menu_kb(uid))
         return True
+
+    if text == ENTER_CODE and is_telegram(uid):
+        # Короткий путь с экрана «есть VK» — без лишнего меню.
+        st = await asyncio.to_thread(account_links.status, uid)
+        if not st["linked"]:
+            store[uid] = {"mode": _MODE_ENTER}
+            await message.answer(
+                f"Введи {panel_codes.CODE_LEN}-значный код из VK-бота:",
+                keyboard=ENTER_KB,
+            )
+            return True
 
     if text != LINK_BTN:
         return False
@@ -88,14 +122,22 @@ async def try_handle(_bot, message, state, text, uid) -> bool:
         return True
 
     store[uid] = {"mode": _MODE_MENU}
-    await message.answer(
-        "🔗 Связь VK и Telegram\n\n"
-        "После привязки заметки, подписки и группа будут общими, "
-        "уведомления о парах — в оба мессенджера.\n\n"
-        f"• «Получить код» — покажу код, введи его в {_other_platform(uid)}.\n"
-        f"• «Ввести код» — если код уже взял в {_other_platform(uid)}.",
-        keyboard=LINK_MENU_KB,
-    )
+    if is_telegram(uid):
+        await message.answer(
+            "🔗 Связь с ВКонтакте\n\n"
+            "Код возьми в VK-боте: «⚙️ Прочее» → «🔗 Связать аккаунты» "
+            "→ «🔑 Получить код», затем введи его сюда.",
+            keyboard=TG_LINK_MENU_KB,
+        )
+    else:
+        await message.answer(
+            "🔗 Связь VK и Telegram\n\n"
+            "После привязки заметки, подписки и группа будут общими, "
+            "уведомления о парах — в оба мессенджера.\n\n"
+            f"• «Получить код» — покажу код, введи его в {_other_platform(uid)}.\n"
+            f"• «Ввести код» — если код уже взял в {_other_platform(uid)}.",
+            keyboard=LINK_MENU_KB,
+        )
     return True
 
 
@@ -174,11 +216,20 @@ async def _unlink(message, uid: int) -> bool:
             )
         except Exception:
             log.exception("audit account.unlink")
-        await message.answer(
-            "Связь снята. Данные остались на стороне VK; "
-            "Telegram снова отдельный профиль, пока не привяжешь заново.",
-            keyboard=MISC_KB,
-        )
+        if is_telegram(uid):
+            from . import tg_vk_gate
+
+            await message.answer(
+                "Связь снята. Данные остались на стороне VK.\n"
+                "Чтобы снова пользоваться Telegram-ботом — привяжи аккаунт заново.",
+            )
+            await tg_vk_gate.offer(message)
+        else:
+            await message.answer(
+                "Связь снята. Данные остались на стороне VK; "
+                "Telegram снова отдельный профиль, пока не привяжешь заново.",
+                keyboard=MISC_KB,
+            )
     else:
         await message.answer("Связи и не было.", keyboard=MISC_KB)
     return True

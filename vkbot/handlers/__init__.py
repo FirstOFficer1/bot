@@ -23,6 +23,7 @@ from . import (
     schedule,
     subscriptions,
     support,
+    tg_vk_gate,
 )
 from ..models import account_links
 from ..state import store
@@ -30,14 +31,20 @@ from ..state import store
 # Порядок имеет значение. Первым идёт согласие: пока его нет, обрабатывать
 # данные не на чем, поэтому оно перехватывает вообще всё, включая приветствие.
 # Хендлер, поставленный выше него, окажется доступен без согласия.
+# account_link — до tg_vk_gate: иначе несвязанный TG не сможет ввести код.
+# tg_vk_gate — только Telegram без VK: дальше меню/расписание закрыты.
 # Дальше common перехватывает "Меню" / приветствие.
 # support — сразу после panel_login: специалисты отвечают командами, не проходя
 # пользовательские разделы.
 _PIPELINE = (
     consent.try_handle,
+    account_link.try_handle,
+    # Удаление своих данных — до TG-шлюза: иначе несвязанный TG не сможет
+    # стереть следы согласия, пока не привяжет VK.
+    privacy.try_handle,
+    tg_vk_gate.try_handle,
     common.try_intro,
     common.try_category,
-    account_link.try_handle,
     panel_login.try_handle,
     support.try_handle,
     schedule.try_handle,
@@ -46,7 +53,6 @@ _PIPELINE = (
     deadlines.try_handle,
     subscriptions.try_handle,
     feedback.try_handle,
-    privacy.try_handle,
     common.try_help,
     # Перед fallback: перехватывает только код входа, и только у того,
     # кто недавно его запрашивал.
@@ -54,9 +60,9 @@ _PIPELINE = (
     common.fallback,
 )
 
-# Привязка смотрит на реальный peer (VK или TG), а не на канонический vk_id —
-# иначе redeem после merge не поймёт, кого связывать.
-_PEER_UID_HANDLERS = frozenset({account_link.try_handle})
+# Привязка и TG-шлюз смотрят на реальный peer, а не на канонический vk_id —
+# иначе redeem после merge / проверка «нужна ли связь» сломаются.
+_PEER_UID_HANDLERS = frozenset({account_link.try_handle, tg_vk_gate.try_handle})
 
 
 async def dispatch_pipeline(bot, message, peer_uid: int, text: str) -> None:

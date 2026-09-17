@@ -195,13 +195,14 @@ prunes login codes (`PANEL_CODES_CLEANUP_DAYS`) and the audit log (`AUDIT_KEEP_D
 and nowhere else. Retention functions here have a habit of being written and never
 called — if you add one, wire it into one of those two places in the same commit.
 
-### Two SQLite databases — note the filename quirk
+### Two SQLite databases
 
 - `notes.db` (`config.NOTES_DB`) — app data: states, notes, reminders, subscriptions,
   deadlines, prefs, panel users/codes/tokens, audit log, seen users.
-- **`sсhedule.db`** (`config.SCHEDULE_DB`) — schedule rows. ⚠️ The `с` in the filename is a
-  **Cyrillic U+0441**, not Latin `c`. This is deliberate (matches the production file) —
-  never "fix" it. Always reference the path via `config.SCHEDULE_DB`.
+- `schedule.db` (`config.SCHEDULE_DB`) — schedule rows. An older production filename
+  used a Cyrillic `с` (`sсhedule.db`); `config.migrate_legacy_schedule_db()` renames
+  it (plus `-wal`/`-shm`) to the Latin name on resolve if the new file is missing.
+  Always reference the path via `config.SCHEDULE_DB`.
 
 DB files (`*.db`) are gitignored.
 

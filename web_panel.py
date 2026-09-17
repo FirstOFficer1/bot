@@ -308,7 +308,7 @@ def _assert_owner_exists() -> None:
 # абсолютными от корня проекта. Относительные пути ломались, если сервис
 # стартовал не из корня — панель и бот открывали разные файлы notes.db.
 NOTES_DB       = _bot_config.NOTES_DB
-SCHEDULE_DB_VK = _bot_config.SCHEDULE_DB   # 'с' в имени файла — кириллица
+SCHEDULE_DB_VK = _bot_config.SCHEDULE_DB
 
 
 # Схема БД создаётся здесь же: панель может быть поднята раньше бота, а таблицы

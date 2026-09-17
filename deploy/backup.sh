@@ -10,7 +10,8 @@
 #
 # Копируются:
 #   * notes.db      — заметки, напоминания, дедлайны, подписки, сессии панели, аудит
-#   * sсhedule.db   — расписание (буква 'с' в имени КИРИЛЛИЧЕСКАЯ, так на проде)
+#   * schedule.db   — расписание (если ещё лежит старое sсhedule.db с кириллической
+#                     «с», копируем его под именем schedule.db)
 #   * s.db          — база легаси Telegram-бота, если она есть
 #   * schedule_versions/ — сохранённые Excel-файлы; без них не работает откат
 #
@@ -40,7 +41,9 @@ PYTHON="${PYTHON:-}"
 # Иначе при DATA_DIR на отдельном томе бэкап честно отработает, скопировав ничего.
 DATA_DIR="${DATA_DIR:-$PROJECT_DIR}"
 NOTES_DB="${NOTES_DB:-$DATA_DIR/notes.db}"
-SCHEDULE_DB="${SCHEDULE_DB:-$DATA_DIR/sсhedule.db}"
+SCHEDULE_DB="${SCHEDULE_DB:-$DATA_DIR/schedule.db}"
+# Старое прод-имя с кириллической «с» (U+0441) — пока файл не переименован приложением.
+LEGACY_CYRILLIC_SCHEDULE_DB="${LEGACY_CYRILLIC_SCHEDULE_DB:-$DATA_DIR/sсhedule.db}"
 LEGACY_SCHEDULE_DB="${LEGACY_SCHEDULE_DB:-$DATA_DIR/s.db}"
 SCHEDULE_VERSIONS_DIR="${SCHEDULE_VERSIONS_DIR:-$DATA_DIR/schedule_versions}"
 
@@ -80,7 +83,13 @@ PY
 
 echo "Бэкап в $DEST"
 backup_db "$NOTES_DB"            "notes.db"
-backup_db "$SCHEDULE_DB"         "sсhedule.db"
+if [ -f "$SCHEDULE_DB" ]; then
+    backup_db "$SCHEDULE_DB" "schedule.db"
+elif [ -f "$LEGACY_CYRILLIC_SCHEDULE_DB" ]; then
+    backup_db "$LEGACY_CYRILLIC_SCHEDULE_DB" "schedule.db"
+else
+    echo "  · schedule.db: файла нет, пропускаю"
+fi
 backup_db "$LEGACY_SCHEDULE_DB"  "s.db"
 
 if [ -d "$SCHEDULE_VERSIONS_DIR" ]; then

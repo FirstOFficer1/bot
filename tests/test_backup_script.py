@@ -73,7 +73,7 @@ def project(tmp_path: Path) -> Path:
     root = tmp_path / "proj"
     (root / "schedule_versions").mkdir(parents=True)
     _make_db(root / "notes.db")
-    _make_db(root / "sсhedule.db")           # 'с' кириллическая, как на проде
+    _make_db(root / "schedule.db")
     (root / "schedule_versions" / "v1.xlsx").write_text("демо", encoding="utf-8")
     return root
 
@@ -88,8 +88,23 @@ def test_backup_copies_databases_and_versions(project: Path, tmp_path: Path):
     assert len(made) == 1, "ожидалась одна папка со штампом времени"
     files = {f.name for f in made[0].iterdir()}
     assert "notes.db" in files
-    assert "sсhedule.db" in files, "кириллическое имя базы не должно теряться"
+    assert "schedule.db" in files
     assert "schedule_versions.tar.gz" in files, "без версий откат расписания невозможен"
+
+
+def test_backup_still_finds_cyrillic_legacy_name(tmp_path: Path):
+    """Пока приложение не переименовало файл — бэкап копирует старое имя."""
+    project = tmp_path / "proj"
+    (project / "schedule_versions").mkdir(parents=True)
+    _make_db(project / "notes.db")
+    _make_db(project / "s\u0441hedule.db")
+    dest = tmp_path / "out"
+
+    result = _run(project, dest)
+
+    assert result.returncode == 0, result.stderr
+    files = {f.name for f in next(dest.iterdir()).iterdir()}
+    assert "schedule.db" in files, "в архиве каноническое имя, даже если источник кириллический"
 
 
 def test_backup_copies_are_readable(project: Path, tmp_path: Path):

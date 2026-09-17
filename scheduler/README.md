@@ -18,10 +18,11 @@ python -m scheduler --dump выгрузка.json
 `date_range`). Снять с сервера:
 
 ```bash
-sqlite3 -json /root/vkbot/sсhedule.db "SELECT course,direction,day,time,subject,teacher,room,week,class_type,date_range FROM schedule" > выгрузка.json
+sqlite3 -json /root/vkbot/schedule.db "SELECT course,direction,day,time,subject,teacher,room,week,class_type,date_range FROM schedule" > выгрузка.json
 ```
 
-(В имени файла `sсhedule.db` буква «с» — кириллическая; это боевая база VK-бота.)
+(Путь к базе — `config.SCHEDULE_DB`; на старых инсталляциях файл мог
+называться `sсhedule.db` с кириллической «с» и при старте бота переименовывается.)
 
 Полезные флаги: `--profiles баланс,студентам`, `-t 90` (секунд на подбор
 времени), `--rooms-time-limit 30`.

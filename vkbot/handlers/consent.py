@@ -93,11 +93,18 @@ async def try_handle(_bot, message, _state, text, uid) -> bool:
         except Exception:
             # Журнал — не причина не пустить человека дальше.
             log.exception("не удалось записать согласие в аудит")
-        await message.answer(
-            "Спасибо! Согласие записано — можно пользоваться.\n"
-            "Напиши «Меню» или нажми кнопку ниже.",
-            keyboard=_kb(["🏠 Меню"]),
-        )
+        from ..ids import is_telegram
+        from . import tg_vk_gate
+
+        if is_telegram(uid):
+            await message.answer("Спасибо! Согласие записано.")
+            await tg_vk_gate.offer(message)
+        else:
+            await message.answer(
+                "Спасибо! Согласие записано — можно пользоваться.\n"
+                "Напиши «Меню» или нажми кнопку ниже.",
+                keyboard=_kb(["🏠 Меню"]),
+            )
         return True
 
     if text == PURGE:

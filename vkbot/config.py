@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import datetime
+import logging
 import os
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+_log = logging.getLogger(__name__)
 
 # ── VK API ────────────────────────────────────────────────────────────────────
 VK_TOKEN: str = os.getenv("VK_TOKEN", "")
@@ -68,9 +71,42 @@ ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR: Path = Path(os.getenv("DATA_DIR") or ROOT)
 
 NOTES_DB: str = os.getenv("NOTES_DB") or str(DATA_DIR / "notes.db")
-# ВНИМАНИЕ: в имени файла буква 'с' — кириллическая (U+0441), не латинская 'c'.
-# Сохранено для обратной совместимости с существующей БД на проде.
-SCHEDULE_DB: str = os.getenv("SCHEDULE_DB") or str(DATA_DIR / "sсhedule.db")
+
+# Раньше файл звался sсhedule.db с кириллической «с» (U+0441). Канон теперь
+# латинский schedule.db; при резолве пути старый файл одноразово
+# переименовывается (вместе с -wal/-shm), если нового ещё нет.
+SCHEDULE_DB_NAME = "schedule.db"
+_LEGACY_CYRILLIC_SCHEDULE_NAME = "s\u0441hedule.db"
+
+
+def migrate_legacy_schedule_db(data_dir: Path | None = None) -> Path | None:
+    """sсhedule.db (кириллица) → schedule.db. None, если переносить было нечего."""
+    root = Path(data_dir) if data_dir is not None else DATA_DIR
+    latin = root / SCHEDULE_DB_NAME
+    legacy = root / _LEGACY_CYRILLIC_SCHEDULE_NAME
+    if latin.exists() or not legacy.exists():
+        return None
+    for suffix in ("", "-wal", "-shm"):
+        src = root / f"{_LEGACY_CYRILLIC_SCHEDULE_NAME}{suffix}"
+        dst = root / f"{SCHEDULE_DB_NAME}{suffix}"
+        if not src.exists() or dst.exists():
+            continue
+        try:
+            src.rename(dst)
+        except OSError as exc:
+            # Параллельный старт бота и панели: второй процесс уже перенёс файл.
+            _log.warning("не удалось переименовать %s → %s: %s", src.name, dst.name, exc)
+            continue
+        _log.warning("расписание: %s → %s", src.name, dst.name)
+    return latin if latin.exists() else None
+
+
+def _default_schedule_db() -> str:
+    migrate_legacy_schedule_db(DATA_DIR)
+    return str(DATA_DIR / SCHEDULE_DB_NAME)
+
+
+SCHEDULE_DB: str = os.getenv("SCHEDULE_DB") or _default_schedule_db()
 
 # Директория для версий загруженных Excel-файлов
 SCHEDULE_VERSIONS_DIR: Path = Path(
