@@ -12,6 +12,8 @@
     только VK ID и название действия; срок хранения ограничен AUDIT_KEEP_DAYS.
   * `panel_users` для владельцев из env — их роль задаётся файлом .env на
     сервере, панель её не контролирует (см. web_panel._is_owner).
+  * `support_messages` сами по себе не в списке: у них нет user_id/vk_id,
+    чистятся вместе с тикетами пользователя (см. purge).
 """
 
 from __future__ import annotations
@@ -32,6 +34,8 @@ _USER_TABLES: tuple[tuple[str, str], ...] = (
     ("panel_session_revocations", "vk_id"),
     ("seen_users", "vk_id"),
     ("panel_users", "vk_id"),
+    ("panel_user_roles", "vk_id"),
+    ("support_tickets", "user_id"),
     ("user_consents", "vk_id"),
 )
 
@@ -49,6 +53,9 @@ LABELS = {
     "panel_session_revocations": "отметка выхода со всех устройств",
     "seen_users": "запись о посещении",
     "panel_users": "роль в панели",
+    "panel_user_roles": "роли в панели",
+    "support_tickets": "обращения в поддержку",
+    "support_messages": "сообщения в тикетах",
     "user_consents": "согласие на обработку данных",
 }
 
@@ -63,6 +70,14 @@ def count_all(uid: int) -> dict[str, int]:
             ).fetchone()[0]
             if n:
                 out[table] = n
+        # Сообщения тикетов — без своей колонки user_id, считаем через тикеты.
+        n_msg = conn.execute(
+            "SELECT COUNT(*) FROM support_messages WHERE ticket_id IN "
+            "(SELECT id FROM support_tickets WHERE user_id=?)",
+            (uid,),
+        ).fetchone()[0]
+        if n_msg:
+            out["support_messages"] = n_msg
     return out
 
 
@@ -70,11 +85,32 @@ def purge(uid: int) -> dict[str, int]:
     """Удаляет все данные пользователя. Возвращает {таблица: сколько удалено}."""
     removed: dict[str, int] = {}
     with connect() as conn:
+        # Сообщения тикетов сначала: FK на support_tickets, своей user-колонки нет.
+        cur = conn.execute(
+            "DELETE FROM support_messages WHERE ticket_id IN "
+            "(SELECT id FROM support_tickets WHERE user_id=?)",
+            (uid,),
+        )
+        if cur.rowcount:
+            removed["support_messages"] = cur.rowcount
         for table, column in _USER_TABLES:
             cur = conn.execute(f"DELETE FROM {table} WHERE {column}=?", (uid,))
             if cur.rowcount:
                 removed[table] = cur.rowcount
     return removed
+
+
+def wipe_account(uid: int) -> dict[str, int]:
+    """Забыть состояние диалога и вычистить все таблицы пользователя.
+
+    ``forget()``, а не ``pop()+flush()``: состояние пишется фоновым потоком, и
+    у flush() есть тайм-аут — по его истечении отложенная запись воскресила бы
+    строку уже после purge().
+    """
+    from ..state import store
+
+    store.forget(uid)
+    return purge(uid)
 
 
 def export_all(uid: int) -> dict:
@@ -96,4 +132,13 @@ def export_all(uid: int) -> dict:
             rows = [dict(zip(names, r)) for r in cur.fetchall()]
             if rows:
                 out[table] = rows
+        cur = conn.execute(
+            "SELECT m.* FROM support_messages m "
+            "JOIN support_tickets t ON t.id = m.ticket_id WHERE t.user_id=?",
+            (uid,),
+        )
+        names = [d[0] for d in cur.description] if cur.description else []
+        rows = [dict(zip(names, r)) for r in cur.fetchall()]
+        if rows:
+            out["support_messages"] = rows
     return out

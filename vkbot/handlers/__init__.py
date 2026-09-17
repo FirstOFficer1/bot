@@ -17,6 +17,7 @@ from . import (
     feedback,
     notes,
     panel_login,
+    privacy,
     reminders,
     schedule,
     subscriptions,
@@ -42,6 +43,7 @@ _PIPELINE = (
     deadlines.try_handle,
     subscriptions.try_handle,
     feedback.try_handle,
+    privacy.try_handle,
     common.try_help,
     # Перед fallback: перехватывает только код входа, и только у того,
     # кто недавно его запрашивал.

@@ -21,13 +21,12 @@ import logging
 from .. import config
 from ..keyboards import build as _kb
 from ..models import audit, consents, seen_users, user_data
-from ..state import store
 
 log = logging.getLogger(__name__)
 
 ACCEPT = "✅ Принимаю"
 DECLINE = "❌ Не принимаю"
-PURGE = "🗑 Удалить мои данные"
+PURGE = "🗑 Удалить мои данные"  # тот же текст, что в MISC_KB / privacy.py
 
 CONSENT_KB = _kb([ACCEPT], [DECLINE])
 DECLINED_KB = _kb([ACCEPT], [PURGE])
@@ -102,17 +101,8 @@ async def try_handle(_bot, message, _state, text, uid) -> bool:
         return True
 
     if text == PURGE:
-        def _purge_everything() -> dict:
-            # forget(), а не pop()+flush(): состояние пишется фоновым потоком, и
-            # у flush() есть тайм-аут — по его истечении отложенная запись
-            # воскресила бы строку уже после purge(). forget() под замком
-            # применения выкидывает пользователя и из памяти, и из очереди,
-            # поэтому воскрешать нечему.
-            store.forget(uid)
-            return user_data.purge(uid)
-
         try:
-            removed = await asyncio.to_thread(_purge_everything)
+            removed = await asyncio.to_thread(user_data.wipe_account, uid)
         except Exception:
             log.exception("не удалось удалить данные по запросу из бота")
             await message.answer(
