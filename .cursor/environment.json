@@ -1,0 +1,15 @@
+{
+  "name": "Электронное расписание (VK-бот + веб-панель)",
+  "install": "sudo apt-get update && sudo apt-get install -y python-is-python3 && pip install -r requirements-dev.txt && python -m playwright install --with-deps chromium",
+  "terminals": [
+    {
+      "name": "web-panel",
+      "command": "mkdir -p \"$HOME/vkbot-data\" && DATA_DIR=\"$HOME/vkbot-data\" PANEL_SECRET=\"${PANEL_SECRET:-dev-panel-secret-change-me-000000000000}\" ADMIN_ID=\"${ADMIN_ID:-1001}\" VK_TOKEN=\"${VK_TOKEN:-}\" PANEL_BASE_URL=\"http://127.0.0.1:5000\" python web_panel.py"
+    },
+    {
+      "name": "vk-bot",
+      "command": "if [ -n \"${VK_TOKEN:-}\" ]; then mkdir -p \"$HOME/vkbot-data\" && DATA_DIR=\"$HOME/vkbot-data\" ADMIN_ID=\"${ADMIN_ID:-1001}\" python -m vkbot; else echo 'VK_TOKEN не задан — добавьте секрет VK_TOKEN, чтобы запустить VK-бота'; fi"
+    }
+  ],
+  "ports": [5000]
+}
