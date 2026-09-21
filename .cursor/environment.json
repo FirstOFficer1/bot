@@ -1,0 +1,10 @@
+{
+  "name": "VK/Telegram-бот и веб-панель",
+  "install": "bash .cursor/install.sh",
+  "terminals": [
+    {
+      "name": "web-panel",
+      "command": "./.venv/bin/python web_panel.py"
+    }
+  ]
+}
